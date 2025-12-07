@@ -500,6 +500,9 @@ type Element struct {
 	IndentChildren bool
 	TrailingSpace  TrailingSpace
 	NameRange      Range
+	OpenTagRange   Range
+	CloseTagRange  *Range
+	SelfClosing    bool
 	Range          Range
 }
 
@@ -731,9 +734,11 @@ type ScriptContents struct {
 }
 
 type ScriptElement struct {
-	Attributes []Attribute
-	Contents   []ScriptContents
-	Range      Range
+	Attributes    []Attribute
+	Contents      []ScriptContents
+	OpenTagRange  Range
+	CloseTagRange Range
+	Range         Range
 }
 
 func (se *ScriptElement) IsNode() bool { return true }
@@ -799,6 +804,9 @@ type RawElement struct {
 	Attributes    []Attribute
 	Contents      string
 	ContentsRange Range
+	NameRange     Range
+	OpenTagRange  Range
+	CloseTagRange Range
 	Range         Range
 }
 
