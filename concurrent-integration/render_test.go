@@ -31,6 +31,22 @@ func TestSync(t *testing.T) {
 	}
 }
 
+func TestConcurrent(t *testing.T) {
+	component := renderConcurrent(testData)
+
+	ctx := templ.InitializeContext(context.Background())
+	actual, diff, err := htmldiff.DiffCtx(ctx, component, expected)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if diff != "" {
+		if err := os.WriteFile("actual-concurrent.html", []byte(actual), 0644); err != nil {
+			t.Errorf("failed to write actual-concurrent.html: %v", err)
+		}
+		t.Error(diff)
+	}
+}
+
 func TestConcurrentSeq(t *testing.T) {
 	component := renderConcurrentSeq(testData)
 
