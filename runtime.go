@@ -287,7 +287,7 @@ func (cssm CSSMiddleware) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Add registered classes to the context.
 	ctx, v := getContext(r.Context())
 	for _, c := range cssm.CSSHandler.Classes {
-		v.addClass(c.ID)
+		v.shouldRenderClass(c.ID) // Mark as already rendered
 	}
 	// Serve the request. Templ components will use the updated context
 	// to know to skip rendering <style> elements for any component CSS
@@ -354,9 +354,8 @@ func renderCSSItemsToBuilder(sb *strings.Builder, v *contextValue, classes ...an
 	for _, c := range classes {
 		switch ccc := c.(type) {
 		case ComponentCSSClass:
-			if !v.hasClassBeenRendered(ccc.ID) {
+			if v.shouldRenderClass(ccc.ID) {
 				sb.WriteString(string(ccc.Class))
-				v.addClass(ccc.ID)
 			}
 		case KeyValue[ComponentCSSClass, bool]:
 			if !ccc.Value {
@@ -553,65 +552,139 @@ type childrenKeyType int
 
 const childrenKey = childrenKeyType(0)
 
+// contextMode determines which implementation to use for concurrent safety
+type contextMode int
+
+const (
+	contextModeSingleThreaded contextMode = iota // Fast path: no locks, not concurrent-safe
+	contextModeConcurrent                        // Safe path: mutex+map, concurrent-safe
+)
+
 type contextValue struct {
+	mode        contextMode
+
+	// Single-threaded mode fields (fast path)
 	ss          map[string]struct{}
 	onceHandles map[*OnceHandle]struct{}
 	nonce       string
+
+	// Concurrent mode fields (safe path) - using mutex+map for better performance
+	mu                    sync.Mutex
+	ssConcurrent          map[string]struct{}
+	onceHandlesConcurrent map[*OnceHandle]struct{}
 }
 
-func (v *contextValue) setHasBeenRendered(h *OnceHandle) {
+func (v *contextValue) shouldRenderOnce(h *OnceHandle) (render bool) {
+	// Concurrent-safe path: use mutex+map
+	if v.mode == contextModeConcurrent {
+		v.mu.Lock()
+		defer v.mu.Unlock()
+
+		if v.onceHandlesConcurrent == nil {
+			v.onceHandlesConcurrent = make(map[*OnceHandle]struct{})
+		}
+		if _, rendered := v.onceHandlesConcurrent[h]; rendered {
+			return false
+		}
+		v.onceHandlesConcurrent[h] = struct{}{}
+		return true
+	}
+
+	// Fast path: plain map (no mutex, not concurrent-safe)
 	if v.onceHandles == nil {
-		v.onceHandles = map[*OnceHandle]struct{}{}
+		v.onceHandles = make(map[*OnceHandle]struct{})
+	}
+	if _, rendered := v.onceHandles[h]; rendered {
+		return false
 	}
 	v.onceHandles[h] = struct{}{}
+	return true
 }
 
-func (v *contextValue) getHasBeenRendered(h *OnceHandle) (ok bool) {
-	if v.onceHandles == nil {
-		v.onceHandles = map[*OnceHandle]struct{}{}
+func (v *contextValue) shouldRenderScript(s string) (render bool) {
+	// Concurrent-safe path: use mutex+map
+	if v.mode == contextModeConcurrent {
+		v.mu.Lock()
+		defer v.mu.Unlock()
+
+		if v.ssConcurrent == nil {
+			v.ssConcurrent = make(map[string]struct{})
+		}
+		key := "script_" + s
+		if _, rendered := v.ssConcurrent[key]; rendered {
+			return false
+		}
+		v.ssConcurrent[key] = struct{}{}
+		return true
 	}
-	_, ok = v.onceHandles[h]
-	return
-}
 
-func (v *contextValue) addScript(s string) {
+	// Fast path: plain map (no mutex, not concurrent-safe)
 	if v.ss == nil {
-		v.ss = map[string]struct{}{}
+		v.ss = make(map[string]struct{})
 	}
-	v.ss["script_"+s] = struct{}{}
+	key := "script_" + s
+	if _, rendered := v.ss[key]; rendered {
+		return false
+	}
+	v.ss[key] = struct{}{}
+	return true
 }
 
-func (v *contextValue) hasScriptBeenRendered(s string) (ok bool) {
-	if v.ss == nil {
-		v.ss = map[string]struct{}{}
-	}
-	_, ok = v.ss["script_"+s]
-	return
-}
+func (v *contextValue) shouldRenderClass(s string) (render bool) {
+	// Concurrent-safe path: use mutex+map
+	if v.mode == contextModeConcurrent {
+		v.mu.Lock()
+		defer v.mu.Unlock()
 
-func (v *contextValue) addClass(s string) {
-	if v.ss == nil {
-		v.ss = map[string]struct{}{}
+		if v.ssConcurrent == nil {
+			v.ssConcurrent = make(map[string]struct{})
+		}
+		key := "class_" + s
+		if _, rendered := v.ssConcurrent[key]; rendered {
+			return false
+		}
+		v.ssConcurrent[key] = struct{}{}
+		return true
 	}
-	v.ss["class_"+s] = struct{}{}
-}
 
-func (v *contextValue) hasClassBeenRendered(s string) (ok bool) {
+	// Fast path: plain map (no mutex, not concurrent-safe)
 	if v.ss == nil {
-		v.ss = map[string]struct{}{}
+		v.ss = make(map[string]struct{})
 	}
-	_, ok = v.ss["class_"+s]
-	return
+	key := "class_" + s
+	if _, rendered := v.ss[key]; rendered {
+		return false
+	}
+	v.ss[key] = struct{}{}
+	return true
 }
 
 // InitializeContext initializes context used to store internal state used during rendering.
+// This uses the fast path (single-threaded mode) which has zero overhead but is NOT safe
+// for concurrent access.
 func InitializeContext(ctx context.Context) context.Context {
 	if _, ok := ctx.Value(contextKey).(*contextValue); ok {
 		return ctx
 	}
-	v := &contextValue{}
+	v := &contextValue{
+		mode: contextModeSingleThreaded,
+	}
 	ctx = context.WithValue(ctx, contextKey, v)
 	return ctx
+}
+
+// newConcurrentChildContext creates a new concurrent-safe context for a child section
+// while preserving the parent context's nonce and other values.
+// This is an internal API used by concurrent rendering functions.
+func newConcurrentChildContext(parent context.Context) context.Context {
+	// Create a fresh concurrent context that doesn't inherit render state
+	// (scripts, classes, once handles) but does inherit nonce and other values
+	v := &contextValue{
+		mode:  contextModeConcurrent,
+		nonce: GetNonce(parent),
+		// Maps initialized lazily on first use
+	}
+	return context.WithValue(parent, contextKey, v)
 }
 
 func getContext(ctx context.Context) (context.Context, *contextValue) {
