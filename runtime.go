@@ -13,6 +13,7 @@ import (
 	"iter"
 	"net/http"
 	"reflect"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -776,6 +777,26 @@ func ConcurrentSeq(seq iter.Seq[Component]) Component {
 
 		return nil
 	})
+}
+
+// Concurrent renders a list of components concurrently while maintaining output order.
+// Internally delegates to ConcurrentSeq.
+//
+// Concurrent rendering adds overhead, so it's most beneficial for components
+// with significant work or I/O operations.
+//
+// Example: @Concurrent(header(), content(), footer())
+func Concurrent(components ...Component) Component {
+	// Edge case optimizations
+	if len(components) == 0 {
+		return NopComponent
+	}
+	if len(components) == 1 {
+		return components[0]
+	}
+
+	// Delegate to ConcurrentSeq using slices.Values
+	return ConcurrentSeq(slices.Values(components))
 }
 
 var bufferPool = sync.Pool{
