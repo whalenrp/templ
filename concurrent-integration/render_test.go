@@ -27,6 +27,19 @@ func TestSync(t *testing.T) {
 	}
 }
 
+func TestConcurrent(t *testing.T) {
+	component := renderConcurrent(testData)
+
+	ctx := templ.InitializeContext(context.Background())
+	_, diff, err := htmldiff.DiffCtx(ctx, component, expected)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if diff != "" {
+		t.Error(diff)
+	}
+}
+
 func TestConcurrentSeq(t *testing.T) {
 	component := renderConcurrentSeq(testData)
 

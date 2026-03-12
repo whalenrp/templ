@@ -13,6 +13,14 @@ templ renderSync(items []string) {
 	}
 }
 
+templ renderConcurrent(items []string) {
+	@templ.Concurrent(
+		item(0, items[0]),
+		item(1, items[1]),
+		item(2, items[2]),
+	)
+}
+
 templ renderConcurrentSeq(items []string) {
 	@templ.ConcurrentSeq(makeIterator(items))
 }
