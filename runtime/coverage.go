@@ -52,6 +52,16 @@ func initCoverage() {
 	}
 }
 
+// EnableCoverageForTesting initializes coverage for tests
+// Call this in tests before rendering templates if TEMPLCOVERDIR wasn't set before init
+func EnableCoverageForTesting() {
+	if coverageRegistry == nil {
+		coverageRegistry = &CoverageRegistry{
+			files: make(map[string]map[Position]uint32),
+		}
+	}
+}
+
 // Record increments the hit count for a coverage point
 func (r *CoverageRegistry) Record(filename string, line, col uint32) {
 	r.mu.Lock()
