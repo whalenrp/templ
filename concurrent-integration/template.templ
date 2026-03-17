@@ -1,0 +1,28 @@
+package concurrentintegration
+
+import "fmt"
+import "iter"
+
+templ item(id int, text string) {
+	<div data-id={ fmt.Sprintf("%d", id) }>{ text }</div>
+}
+
+templ renderSync(items []string) {
+	for i, text := range items {
+		@item(i, text)
+	}
+}
+
+templ renderConcurrentSeq(items []string) {
+	@templ.ConcurrentSeq(makeIterator(items))
+}
+
+func makeIterator(items []string) iter.Seq[templ.Component] {
+	return func(yield func(templ.Component) bool) {
+		for i, text := range items {
+			if !yield(item(i, text)) {
+				return
+			}
+		}
+	}
+}
