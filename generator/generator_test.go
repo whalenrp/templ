@@ -2,6 +2,7 @@ package generator
 
 import (
 	"bytes"
+	"strings"
 	"testing"
 
 	"github.com/a-h/templ/parser/v2"
@@ -103,5 +104,49 @@ func TestIsExpressionAttributeValueURL(t *testing.T) {
 		if output := isExpressionAttributeValueURL(testCase.elementName, testCase.attrName); output != testCase.expectedOutput {
 			t.Errorf("expected %t got %t", testCase.expectedOutput, output)
 		}
+	}
+}
+
+func TestGenerate_WithCoverage(t *testing.T) {
+	input := `package test
+templ example() {
+	{ "hello" }
+}`
+	tf, err := parser.ParseString(input)
+	if err != nil {
+		t.Fatalf("parse failed: %v", err)
+	}
+
+	var buf bytes.Buffer
+	_, err = Generate(tf, &buf, WithCoverage(true))
+	if err != nil {
+		t.Fatalf("generate failed: %v", err)
+	}
+
+	output := buf.String()
+	if !strings.Contains(output, "templruntime.CoverageTrack") {
+		t.Error("expected CoverageTrack call in output when coverage enabled")
+	}
+}
+
+func TestGenerate_WithoutCoverage(t *testing.T) {
+	input := `package test
+templ example() {
+	{ "hello" }
+}`
+	tf, err := parser.ParseString(input)
+	if err != nil {
+		t.Fatalf("parse failed: %v", err)
+	}
+
+	var buf bytes.Buffer
+	_, err = Generate(tf, &buf)
+	if err != nil {
+		t.Fatalf("generate failed: %v", err)
+	}
+
+	output := buf.String()
+	if strings.Contains(output, "templruntime.CoverageTrack") {
+		t.Error("unexpected CoverageTrack call when coverage disabled")
 	}
 }

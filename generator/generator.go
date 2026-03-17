@@ -59,6 +59,14 @@ func WithSkipCodeGeneratedComment() GenerateOpt {
 	}
 }
 
+// WithCoverage enables coverage tracking instrumentation.
+func WithCoverage(enabled bool) GenerateOpt {
+	return func(g *generator) error {
+		g.options.Coverage = enabled
+		return nil
+	}
+}
+
 type GeneratorOutput struct {
 	Options   GeneratorOptions  `json:"meta"`
 	SourceMap *parser.SourceMap `json:"sourceMap"`
@@ -74,6 +82,8 @@ type GeneratorOptions struct {
 	SkipCodeGeneratedComment bool
 	// GeneratedDate to include as a comment.
 	GeneratedDate string
+	// Coverage enables coverage tracking instrumentation.
+	Coverage bool
 }
 
 // HasGoChanged returns true if the Go code has changed between the previous and updated GeneratorOutput.
@@ -86,6 +96,9 @@ func HasGoChanged(previous, updated GeneratorOutput) bool {
 		return true
 	}
 	if previous.Options.SkipCodeGeneratedComment != updated.Options.SkipCodeGeneratedComment {
+		return true
+	}
+	if previous.Options.Coverage != updated.Options.Coverage {
 		return true
 	}
 	// We don't check the generated date as it's not used for determining if the file has changed.
@@ -1644,6 +1657,19 @@ func (g *generator) writeStringExpression(indentLevel int, e parser.Expression) 
 	if strings.TrimSpace(e.Value) == "" {
 		return
 	}
+
+	// Emit coverage tracking call if coverage enabled.
+	if g.options.Coverage {
+		line := e.Range.From.Line
+		col := e.Range.From.Col
+		filename := g.options.FileName
+		trackingCall := fmt.Sprintf("templruntime.CoverageTrack(%q, %d, %d)\n",
+			filename, line, col)
+		if _, err = g.w.WriteIndent(indentLevel, trackingCall); err != nil {
+			return err
+		}
+	}
+
 	var r parser.Range
 	vn := g.createVariableName()
 	// var vn string

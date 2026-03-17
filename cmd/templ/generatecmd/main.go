@@ -33,6 +33,8 @@ Args:
     Set to false to skip inclusion of the templ version in the generated code. (default true)
   -include-timestamp
     Set to true to include the current time in the generated code.
+  -coverage
+    Set to true to enable coverage tracking instrumentation in generated code.
   -watch
     Set to true to watch the path for changes and regenerate code.
   -watch-pattern <regexp>
@@ -89,6 +91,7 @@ func NewArguments(stdout, stderr io.Writer, args []string) (cmdArgs Arguments, l
 	cmd.BoolVar(&cmdArgs.GenerateSourceMapVisualisations, "source-map-visualisations", false, "")
 	cmd.BoolVar(&cmdArgs.IncludeVersion, "include-version", true, "")
 	cmd.BoolVar(&cmdArgs.IncludeTimestamp, "include-timestamp", false, "")
+	cmd.BoolVar(&cmdArgs.Coverage, "coverage", false, "")
 	cmd.BoolVar(&cmdArgs.Watch, "watch", false, "")
 	watchPatternFlag := cmd.String("watch-pattern", defaultWatchPattern, "")
 	ignorePatternFlag := cmd.String("ignore-pattern", "", "")
@@ -166,6 +169,7 @@ type Arguments struct {
 	GenerateSourceMapVisualisations bool
 	IncludeVersion                  bool
 	IncludeTimestamp                bool
+	Coverage                        bool
 	// PPROFPort is the port to run the pprof server on.
 	PPROFPort         int
 	KeepOrphanedFiles bool

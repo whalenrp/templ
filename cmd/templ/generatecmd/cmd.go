@@ -78,6 +78,9 @@ func (cmd Generate) Run(ctx context.Context) (err error) {
 	if cmd.Args.IncludeTimestamp {
 		opts = append(opts, generator.WithTimestamp(time.Now()))
 	}
+	if cmd.Args.Coverage {
+		opts = append(opts, generator.WithCoverage(true))
+	}
 
 	// Check the version of the templ module.
 	if err := modcheck.Check(cmd.Args.Path); err != nil {
