@@ -10,6 +10,7 @@ import (
 	"html"
 	"html/template"
 	"io"
+	"iter"
 	"net/http"
 	"reflect"
 	"sort"
@@ -620,6 +621,114 @@ func getContext(ctx context.Context) (context.Context, *contextValue) {
 		v = ctx.Value(contextKey).(*contextValue)
 	}
 	return ctx, v
+}
+
+// ConcurrentSeq renders components from an iterator concurrently while maintaining
+// output order. Useful for dynamically generated component lists.
+// Uses a worker pool (max 10 goroutines) to limit resource usage.
+//
+// Concurrent rendering adds overhead, so it's most beneficial for components
+// with significant work or I/O operations.
+//
+// Example: @ConcurrentSeq(GenerateItems())
+func ConcurrentSeq(seq iter.Seq[Component]) Component {
+	return ComponentFunc(func(ctx context.Context, w io.Writer) error {
+		// Result structure for each component
+		type result struct {
+			index     int
+			component Component
+			buffer    *bytes.Buffer
+			err       error
+			done      chan struct{}
+		}
+
+		// Channels for coordination
+		const maxWorkers = 10
+		jobs := make(chan *result, maxWorkers)
+		resultStream := make(chan *result, maxWorkers)
+		var wg sync.WaitGroup
+
+		// Start worker pool
+		for range maxWorkers {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				for res := range jobs {
+					// Recover from panics and convert to errors
+					func() {
+						defer func() {
+							if r := recover(); r != nil {
+								res.err = fmt.Errorf("panic rendering component: %v", r)
+							}
+						}()
+						res.err = res.component.Render(ctx, res.buffer)
+					}()
+					close(res.done)
+				}
+			}()
+		}
+
+		// Dispatcher: iterates through components, allocates buffers lazily,
+		// sends to workers, and sends to resultStream in order
+		// Also captures any panics from the iterator itself
+		dispatcherErr := make(chan error, 1)
+		go func() {
+			defer close(resultStream)
+			defer func() {
+				if r := recover(); r != nil {
+					dispatcherErr <- fmt.Errorf("panic in iterator: %v", r)
+				}
+				close(dispatcherErr)
+			}()
+
+			idx := 0
+			for component := range seq {
+				// Get buffer from pool for reuse
+				res := &result{
+					index:     idx,
+					component: component,
+					buffer:    GetBuffer(),
+					done:      make(chan struct{}),
+				}
+
+				// Send to worker pool
+				jobs <- res
+
+				// Send to result stream (maintains order)
+				resultStream <- res
+
+				idx++
+			}
+			close(jobs)
+			wg.Wait()
+		}()
+
+		// Writer: reads from resultStream in order, waits for each to complete
+		for res := range resultStream {
+			// Return buffer to pool after use
+			defer ReleaseBuffer(res.buffer)
+
+			// Wait for this component to finish rendering
+			<-res.done
+
+			// Check for error
+			if res.err != nil {
+				return res.err
+			}
+
+			// Write this component's output
+			if _, err := res.buffer.WriteTo(w); err != nil {
+				return err
+			}
+		}
+
+		// Check for dispatcher errors (iterator panics)
+		if err := <-dispatcherErr; err != nil {
+			return err
+		}
+
+		return nil
+	})
 }
 
 var bufferPool = sync.Pool{
