@@ -191,3 +191,33 @@ func TestCoverageRegistry_Flush(t *testing.T) {
 		t.Errorf("expected 1 coverage point in profile")
 	}
 }
+
+func TestFlushCoverage_Explicit(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("TEMPLCOVERDIR", tmpDir)
+
+	// Save and restore
+	oldRegistry := coverageRegistry
+	t.Cleanup(func() { coverageRegistry = oldRegistry })
+
+	// Initialize fresh registry
+	initCoverage()
+
+	// Record some coverage
+	CoverageTrack("test.templ", 5, 10)
+
+	// Explicitly flush
+	if err := FlushCoverage(); err != nil {
+		t.Fatalf("FlushCoverage failed: %v", err)
+	}
+
+	// Verify file was written
+	files, err := filepath.Glob(filepath.Join(tmpDir, "templ-*.json"))
+	if err != nil {
+		t.Fatalf("failed to glob files: %v", err)
+	}
+
+	if len(files) != 1 {
+		t.Errorf("expected 1 profile file after explicit flush, found %d", len(files))
+	}
+}

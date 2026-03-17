@@ -4,8 +4,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -36,7 +38,10 @@ type CoverageRegistry struct {
 	files map[string]map[Position]uint32 // filename → position → hit count
 }
 
-var coverageRegistry *CoverageRegistry
+var (
+	coverageRegistry *CoverageRegistry
+	signalOnce       sync.Once
+)
 
 // initCoverage initializes the coverage registry if TEMPLCOVERDIR is set
 func initCoverage() {
@@ -126,17 +131,27 @@ func (r *CoverageRegistry) Flush() error {
 	return r.WriteProfile(path)
 }
 
+// FlushCoverage explicitly flushes coverage data to disk
+// Tests should call this in cleanup to ensure profiles are written
+func FlushCoverage() error {
+	if coverageRegistry == nil {
+		return nil
+	}
+	return coverageRegistry.Flush()
+}
+
 func init() {
 	initCoverage()
 	if coverageRegistry != nil {
-		// Register exit hook to flush coverage on process exit
-		// Note: We can't import testing package here, so we use a simple approach
-		// that works for test processes. For more robust handling in production,
-		// consider signal handlers or other exit hook mechanisms in Phase 4.
-		go func() {
-			// This goroutine will exist for the process lifetime
-			// When main goroutine exits, deferred functions run, but we need
-			// to ensure coverage is written. We'll rely on test cleanup for now.
-		}()
+		// Best-effort auto-flush on interrupt signals (once per process)
+		signalOnce.Do(func() {
+			go func() {
+				sigChan := make(chan os.Signal, 1)
+				signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
+				<-sigChan
+				FlushCoverage()
+				os.Exit(1)
+			}()
+		})
 	}
 }
