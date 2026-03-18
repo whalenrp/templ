@@ -627,7 +627,7 @@ func (g *generator) writeNode(indentLevel int, current parser.Node, next parser.
 	case *parser.HTMLComment:
 		err = g.writeComment(indentLevel, n)
 	case *parser.ChildrenExpression:
-		err = g.writeChildrenExpression(indentLevel)
+		err = g.writeChildrenExpression(indentLevel, n)
 	case *parser.RawElement:
 		err = g.writeRawElement(indentLevel, n)
 	case *parser.ScriptElement:
@@ -866,6 +866,13 @@ func (g *generator) writeIfExpression(indentLevel int, n *parser.IfExpression, n
 
 func (g *generator) writeSwitchExpression(indentLevel int, n *parser.SwitchExpression, next parser.Node) (err error) {
 	var r parser.Range
+	// Coverage tracking for switch expression
+	if g.options.Coverage {
+		trackingCall := fmt.Sprintf("templruntime.CoverageTrack(%q, %d, %d)\n", g.options.FileName, n.Range.From.Line, n.Range.From.Col)
+		if _, err = g.w.WriteIndent(indentLevel, trackingCall); err != nil {
+			return err
+		}
+	}
 	// switch
 	if _, err = g.w.WriteIndent(indentLevel, `switch `); err != nil {
 		return err
@@ -889,6 +896,13 @@ func (g *generator) writeSwitchExpression(indentLevel int, n *parser.SwitchExpre
 			}
 			g.sourceMap.Add(c.Expression, r)
 			indentLevel++
+			// Coverage tracking for case entry
+			if g.options.Coverage {
+				trackingCall := fmt.Sprintf("templruntime.CoverageTrack(%q, %d, %d)\n", g.options.FileName, c.Expression.Range.From.Line, c.Expression.Range.From.Col)
+				if _, err = g.w.WriteIndent(indentLevel, trackingCall); err != nil {
+					return err
+				}
+			}
 			if err = g.writeNodes(indentLevel, stripLeadingAndTrailingWhitespace(c.Children), next); err != nil {
 				return err
 			}
@@ -902,7 +916,14 @@ func (g *generator) writeSwitchExpression(indentLevel int, n *parser.SwitchExpre
 	return nil
 }
 
-func (g *generator) writeChildrenExpression(indentLevel int) (err error) {
+func (g *generator) writeChildrenExpression(indentLevel int, n *parser.ChildrenExpression) (err error) {
+	// Coverage tracking for children expression
+	if g.options.Coverage {
+		trackingCall := fmt.Sprintf("templruntime.CoverageTrack(%q, %d, %d)\n", g.options.FileName, n.Range.From.Line, n.Range.From.Col)
+		if _, err = g.w.WriteIndent(indentLevel, trackingCall); err != nil {
+			return err
+		}
+	}
 	if _, err = g.w.WriteIndent(indentLevel, fmt.Sprintf("templ_7745c5c3_Err = %s.Render(ctx, templ_7745c5c3_Buffer)\n", g.childrenVar)); err != nil {
 		return err
 	}
@@ -913,6 +934,13 @@ func (g *generator) writeChildrenExpression(indentLevel int) (err error) {
 }
 
 func (g *generator) writeTemplElementExpression(indentLevel int, n *parser.TemplElementExpression) (err error) {
+	// Coverage tracking for template call site
+	if g.options.Coverage {
+		trackingCall := fmt.Sprintf("templruntime.CoverageTrack(%q, %d, %d)\n", g.options.FileName, n.Range.From.Line, n.Range.From.Col)
+		if _, err = g.w.WriteIndent(indentLevel, trackingCall); err != nil {
+			return err
+		}
+	}
 	if len(n.Children) == 0 {
 		return g.writeSelfClosingTemplElementExpression(indentLevel, n)
 	}
@@ -1006,6 +1034,13 @@ func (g *generator) writeCallTemplateExpression(indentLevel int, n *parser.CallT
 
 func (g *generator) writeForExpression(indentLevel int, n *parser.ForExpression, next parser.Node) (err error) {
 	var r parser.Range
+	// Coverage tracking for for statement
+	if g.options.Coverage {
+		trackingCall := fmt.Sprintf("templruntime.CoverageTrack(%q, %d, %d)\n", g.options.FileName, n.Range.From.Line, n.Range.From.Col)
+		if _, err = g.w.WriteIndent(indentLevel, trackingCall); err != nil {
+			return err
+		}
+	}
 	// for
 	if _, err = g.w.WriteIndent(indentLevel, `for `); err != nil {
 		return err
@@ -1021,6 +1056,19 @@ func (g *generator) writeForExpression(indentLevel int, n *parser.ForExpression,
 	}
 	// Children.
 	indentLevel++
+	// Coverage tracking for loop body entry
+	if g.options.Coverage && len(n.Children) > 0 {
+		stripped := stripLeadingAndTrailingWhitespace(n.Children)
+		if len(stripped) > 0 {
+			cr := nodeRange(stripped[0])
+			if cr.From.Line > 0 {
+				trackingCall := fmt.Sprintf("templruntime.CoverageTrack(%q, %d, %d)\n", g.options.FileName, cr.From.Line, cr.From.Col)
+				if _, err = g.w.WriteIndent(indentLevel, trackingCall); err != nil {
+					return err
+				}
+			}
+		}
+	}
 	if err = g.writeNodes(indentLevel, stripLeadingAndTrailingWhitespace(n.Children), next); err != nil {
 		return err
 	}
@@ -1071,6 +1119,13 @@ func (g *generator) writeExpressionErrorHandler(indentLevel int, expression pars
 }
 
 func (g *generator) writeElement(indentLevel int, n *parser.Element) (err error) {
+	// Coverage tracking for opening tag
+	if g.options.Coverage {
+		trackingCall := fmt.Sprintf("templruntime.CoverageTrack(%q, %d, %d)\n", g.options.FileName, n.Range.From.Line, n.Range.From.Col)
+		if _, err = g.w.WriteIndent(indentLevel, trackingCall); err != nil {
+			return err
+		}
+	}
 	if len(n.Attributes) == 0 {
 		// <div>
 		if _, err = g.w.WriteStringLiteral(indentLevel, fmt.Sprintf(`<%s>`, html.EscapeString(n.Name))); err != nil {
@@ -1105,6 +1160,13 @@ func (g *generator) writeElement(indentLevel int, n *parser.Element) (err error)
 	// Children.
 	if err = g.writeNodes(indentLevel, stripWhitespace(n.Children), nil); err != nil {
 		return err
+	}
+	// Coverage tracking for closing tag
+	if g.options.Coverage {
+		trackingCall := fmt.Sprintf("templruntime.CoverageTrack(%q, %d, %d)\n", g.options.FileName, n.Range.To.Line, n.Range.To.Col)
+		if _, err = g.w.WriteIndent(indentLevel, trackingCall); err != nil {
+			return err
+		}
 	}
 	// </div>
 	if _, err = g.w.WriteStringLiteral(indentLevel, fmt.Sprintf(`</%s>`, html.EscapeString(n.Name))); err != nil {
@@ -1793,6 +1855,13 @@ func (g *generator) writeWhitespace(indentLevel int, n *parser.Whitespace) (err 
 }
 
 func (g *generator) writeText(indentLevel int, n *parser.Text) (err error) {
+	// Coverage tracking for text literal
+	if g.options.Coverage {
+		trackingCall := fmt.Sprintf("templruntime.CoverageTrack(%q, %d, %d)\n", g.options.FileName, n.Range.From.Line, n.Range.From.Col)
+		if _, err = g.w.WriteIndent(indentLevel, trackingCall); err != nil {
+			return err
+		}
+	}
 	_, err = g.w.WriteStringLiteral(indentLevel, escapeQuotes(n.Value))
 	return err
 }

@@ -1,0 +1,13 @@
+package testcoveragechildren
+
+templ Wrapper() {
+	<div class="wrapper">
+		{ children... }
+	</div>
+}
+
+templ UsesWrapper() {
+	@Wrapper() {
+		<span>Child content</span>
+	}
+}

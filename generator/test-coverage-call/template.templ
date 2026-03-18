@@ -1,0 +1,11 @@
+package testcoveragecall
+
+templ Helper(text string) {
+	<span>{ text }</span>
+}
+
+templ CallsHelper() {
+	<div>
+		@Helper("test")
+	</div>
+}

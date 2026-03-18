@@ -1,0 +1,13 @@
+package testcoveragefor
+
+templ WithFor(items []string) {
+	for _, item := range items {
+		<div>{ item }</div>
+	}
+}
+
+templ WithEmptyFor() {
+	for _, item := range []string{} {
+		<div>{ item }</div>
+	}
+}
