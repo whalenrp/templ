@@ -30,15 +30,16 @@ Coverage is only active when the `TEMPLCOVERDIR` environment variable is set. Th
 
 ## Coverage Points
 
-Templ tracks execution at the expression level:
+Templ tracks execution at the expression and element level:
 
 - String expressions: `{ name }`
-- If/else branches
-- Switch cases
-- For loops
+- If/else branches: condition, then-branch, else-branch
+- Switch cases: expression, each case, default
+- For loops: statement, body entry
 - Template calls: `@component()`
-- Static HTML elements: `<div>`
+- Static HTML elements: opening and closing tags
 - Text literals
+- Children expressions: `{ children... }`
 
 ## Workflow
 
