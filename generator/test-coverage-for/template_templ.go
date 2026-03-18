@@ -32,7 +32,6 @@ func WithFor(items []string) templ.Component {
 		templruntime.CoverageTrack("generator/test-coverage-for/template.templ", 3, 0)
 		for _, item := range items {
 			templruntime.CoverageTrack("generator/test-coverage-for/template.templ", 4, 2)
-			templruntime.CoverageTrack("generator/test-coverage-for/template.templ", 4, 2)
 			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 1, "<div>")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
@@ -80,7 +79,6 @@ func WithEmptyFor() templ.Component {
 		ctx = templ.ClearChildren(ctx)
 		templruntime.CoverageTrack("generator/test-coverage-for/template.templ", 9, 0)
 		for _, item := range []string{} {
-			templruntime.CoverageTrack("generator/test-coverage-for/template.templ", 10, 2)
 			templruntime.CoverageTrack("generator/test-coverage-for/template.templ", 10, 2)
 			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 3, "<div>")
 			if templ_7745c5c3_Err != nil {

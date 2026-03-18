@@ -101,7 +101,6 @@ func Comprehensive(show bool, items []string) templ.Component {
 		templruntime.CoverageTrack("generator/test-coverage-integration/template.templ", 11, 2)
 		if show {
 			templruntime.CoverageTrack("generator/test-coverage-integration/template.templ", 12, 3)
-			templruntime.CoverageTrack("generator/test-coverage-integration/template.templ", 12, 3)
 			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 6, "<p>")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
@@ -117,7 +116,6 @@ func Comprehensive(show bool, items []string) templ.Component {
 				return templ_7745c5c3_Err
 			}
 		} else {
-			templruntime.CoverageTrack("generator/test-coverage-integration/template.templ", 14, 3)
 			templruntime.CoverageTrack("generator/test-coverage-integration/template.templ", 14, 3)
 			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 9, "<p>")
 			if templ_7745c5c3_Err != nil {
@@ -190,7 +188,6 @@ func Comprehensive(show bool, items []string) templ.Component {
 		}
 		templruntime.CoverageTrack("generator/test-coverage-integration/template.templ", 24, 3)
 		for _, item := range items {
-			templruntime.CoverageTrack("generator/test-coverage-integration/template.templ", 27, 3)
 			templruntime.CoverageTrack("generator/test-coverage-integration/template.templ", 27, 3)
 			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 21, "<li>")
 			if templ_7745c5c3_Err != nil {

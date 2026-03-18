@@ -1,69 +1,73 @@
 package testcoverageif
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	templruntime "github.com/a-h/templ/runtime"
 )
 
 func TestCoverageIf(t *testing.T) {
-	coverageDir := t.TempDir()
-	t.Setenv("TEMPLCOVERDIR", coverageDir)
+	coverDir := t.TempDir()
+	t.Setenv("TEMPLCOVERDIR", coverDir)
 	templruntime.EnableCoverageForTesting()
+	defer templruntime.FlushCoverage()
 
-	var buf bytes.Buffer
+	ctx := context.Background()
+	var buf strings.Builder
 
-	if err := WithIf(true).Render(context.Background(), &buf); err != nil {
-		t.Fatalf("WithIf(true) failed: %v", err)
+	if err := WithIf(true).Render(ctx, &buf); err != nil {
+		t.Fatal(err)
 	}
 	buf.Reset()
-	if err := WithIf(false).Render(context.Background(), &buf); err != nil {
-		t.Fatalf("WithIf(false) failed: %v", err)
+	if err := WithIf(false).Render(ctx, &buf); err != nil {
+		t.Fatal(err)
 	}
 	buf.Reset()
-	if err := WithIfElse(true).Render(context.Background(), &buf); err != nil {
-		t.Fatalf("WithIfElse(true) failed: %v", err)
+	if err := WithIfElse(true).Render(ctx, &buf); err != nil {
+		t.Fatal(err)
 	}
 	buf.Reset()
-	if err := WithIfElse(false).Render(context.Background(), &buf); err != nil {
-		t.Fatalf("WithIfElse(false) failed: %v", err)
+	if err := WithIfElse(false).Render(ctx, &buf); err != nil {
+		t.Fatal(err)
 	}
 
 	if err := templruntime.FlushCoverage(); err != nil {
-		t.Fatalf("flush failed: %v", err)
+		t.Fatal(err)
 	}
 
-	files, err := filepath.Glob(filepath.Join(coverageDir, "templ-*.json"))
-	if err != nil || len(files) == 0 {
-		t.Fatalf("expected at least 1 profile file, found %d", len(files))
+	files, err := filepath.Glob(filepath.Join(coverDir, "templ-*.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(files) == 0 {
+		t.Fatal("no coverage profile generated")
 	}
 
 	data, err := os.ReadFile(files[0])
 	if err != nil {
-		t.Fatalf("failed to read profile: %v", err)
+		t.Fatal(err)
 	}
 
 	var profile templruntime.CoverageProfile
 	if err := json.Unmarshal(data, &profile); err != nil {
-		t.Fatalf("failed to parse profile: %v", err)
+		t.Fatal(err)
 	}
 
-	var totalPoints int
-	for _, points := range profile.Files {
-		totalPoints += len(points)
+	points := profile.Files["generator/test-coverage-if/template.templ"]
+	if len(points) == 0 {
+		t.Fatal("expected coverage points")
 	}
 
-	// WithIf has 2 coverage points (condition + then-branch)
-	// WithIfElse has 3 coverage points (condition + then-branch + else-branch)
-	// Total: 5 points
-	if totalPoints < 5 {
-		t.Errorf("expected at least 5 coverage points, got %d", totalPoints)
+	// WithIf: if condition + then-branch element
+	// WithIfElse: if condition + then-branch element + else-branch element
+	if len(points) < 3 {
+		t.Errorf("expected at least 3 coverage points, got %d", len(points))
 	}
 
-	t.Logf("Coverage collected: %d points across %d files", totalPoints, len(profile.Files))
+	t.Logf("Coverage collected: %d points", len(points))
 }

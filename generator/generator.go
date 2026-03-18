@@ -725,49 +725,11 @@ func escapeQuotes(s string) string {
 	return quoted[1 : len(quoted)-1]
 }
 
-// nodeRange extracts the Range from a Node.
-// All concrete Node types have a Range field but the interface doesn't expose it.
-func nodeRange(n parser.Node) parser.Range {
-	switch n := n.(type) {
-	case *parser.Element:
-		return n.Range
-	case *parser.Text:
-		return n.Range
-	case *parser.IfExpression:
-		return n.Range
-	case *parser.SwitchExpression:
-		return n.Range
-	case *parser.ForExpression:
-		return n.Range
-	case *parser.StringExpression:
-		return n.Expression.Range
-	case *parser.TemplElementExpression:
-		return n.Range
-	case *parser.ChildrenExpression:
-		return n.Range
-	case *parser.GoCode:
-		return n.Expression.Range
-	case *parser.RawElement:
-		return n.Range
-	case *parser.ScriptElement:
-		return n.Range
-	case *parser.HTMLComment:
-		return n.Range
-	case *parser.GoComment:
-		return n.Range
-	default:
-		return parser.Range{}
-	}
-}
-
 func (g *generator) writeIfExpression(indentLevel int, n *parser.IfExpression, nextNode parser.Node) (err error) {
 	var r parser.Range
 	// Emit a coverage point at the if condition before branching.
 	if g.options.Coverage {
-		line := n.Range.From.Line
-		col := n.Range.From.Col
-		filename := g.options.FileName
-		trackingCall := fmt.Sprintf("templruntime.CoverageTrack(%q, %d, %d)\n", filename, line, col)
+		trackingCall := fmt.Sprintf("templruntime.CoverageTrack(%q, %d, %d)\n", g.options.FileName, n.Range.From.Line, n.Range.From.Col)
 		if _, err = g.w.WriteIndent(indentLevel, trackingCall); err != nil {
 			return err
 		}
@@ -787,18 +749,6 @@ func (g *generator) writeIfExpression(indentLevel int, n *parser.IfExpression, n
 	}
 	{
 		indentLevel++
-		if g.options.Coverage && len(n.Then) > 0 {
-			stripped := stripLeadingAndTrailingWhitespace(n.Then)
-			if len(stripped) > 0 {
-				r := nodeRange(stripped[0])
-				if r.From.Line > 0 {
-					trackingCall := fmt.Sprintf("templruntime.CoverageTrack(%q, %d, %d)\n", g.options.FileName, r.From.Line, r.From.Col)
-					if _, err = g.w.WriteIndent(indentLevel, trackingCall); err != nil {
-						return err
-					}
-				}
-			}
-		}
 		if err = g.writeNodes(indentLevel, stripLeadingAndTrailingWhitespace(n.Then), nextNode); err != nil {
 			return err
 		}
@@ -839,18 +789,6 @@ func (g *generator) writeIfExpression(indentLevel int, n *parser.IfExpression, n
 		}
 		{
 			indentLevel++
-			if g.options.Coverage && len(n.Else) > 0 {
-				stripped := stripLeadingAndTrailingWhitespace(n.Else)
-				if len(stripped) > 0 {
-					r := nodeRange(stripped[0])
-					if r.From.Line > 0 {
-						trackingCall := fmt.Sprintf("templruntime.CoverageTrack(%q, %d, %d)\n", g.options.FileName, r.From.Line, r.From.Col)
-						if _, err = g.w.WriteIndent(indentLevel, trackingCall); err != nil {
-							return err
-						}
-					}
-				}
-			}
 			if err = g.writeNodes(indentLevel, stripLeadingAndTrailingWhitespace(n.Else), nextNode); err != nil {
 				return err
 			}
@@ -1056,19 +994,6 @@ func (g *generator) writeForExpression(indentLevel int, n *parser.ForExpression,
 	}
 	// Children.
 	indentLevel++
-	// Coverage tracking for loop body entry
-	if g.options.Coverage && len(n.Children) > 0 {
-		stripped := stripLeadingAndTrailingWhitespace(n.Children)
-		if len(stripped) > 0 {
-			cr := nodeRange(stripped[0])
-			if cr.From.Line > 0 {
-				trackingCall := fmt.Sprintf("templruntime.CoverageTrack(%q, %d, %d)\n", g.options.FileName, cr.From.Line, cr.From.Col)
-				if _, err = g.w.WriteIndent(indentLevel, trackingCall); err != nil {
-					return err
-				}
-			}
-		}
-	}
 	if err = g.writeNodes(indentLevel, stripLeadingAndTrailingWhitespace(n.Children), next); err != nil {
 		return err
 	}
