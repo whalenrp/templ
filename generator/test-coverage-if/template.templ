@@ -1,0 +1,15 @@
+package testcoverageif
+
+templ WithIf(show bool) {
+	if show {
+		<div>Shown</div>
+	}
+}
+
+templ WithIfElse(show bool) {
+	if show {
+		<div>Then branch</div>
+	} else {
+		<div>Else branch</div>
+	}
+}
