@@ -28,7 +28,7 @@ func LoadManifest(path string) (*Manifest, error) {
 
 	var m Manifest
 	if err := json.Unmarshal(data, &m); err != nil {
-		return nil, fmt.Errorf("failed to decode manifest: %w", err)
+		return nil, fmt.Errorf("failed to decode manifest %s: %w", path, err)
 	}
 
 	return &m, nil

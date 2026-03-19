@@ -269,7 +269,7 @@ func generateHTMLReport(w io.Writer, profile *Profile, manifest *Manifest, outpu
 
 		lines := strings.Split(string(source), "\n")
 		for i, line := range lines {
-			lineNum := uint32(i)
+			lineNum := uint32(i + 1)
 			li := lineInfo{Number: i + 1, Text: line}
 			hasCov := lineCovered[lineNum]
 			hasUncov := lineUncovered[lineNum]
