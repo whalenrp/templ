@@ -8,7 +8,6 @@ import (
 	htmltemplate "html/template"
 	"io"
 	"os"
-	"path/filepath"
 	"sort"
 	"strings"
 )
@@ -208,7 +207,7 @@ func generateHTMLReport(w io.Writer, profile *Profile, manifest *Manifest, outpu
 	sort.Strings(filenames)
 
 	for _, filename := range filenames {
-		fd := fileData{Name: filepath.Base(filename)}
+		fd := fileData{Name: filename}
 
 		var covered int
 		if manifest != nil {
@@ -242,16 +241,14 @@ func generateHTMLReport(w io.Writer, profile *Profile, manifest *Manifest, outpu
 		lineUncovered := make(map[uint32]bool)
 
 		if manifest != nil {
-			for _, mp := range manifest.Files[filename] {
-				pos := Position{Line: mp.Line, Col: mp.Col}
-				isCovered := false
-				for _, p := range profile.Files[filename] {
-					if p.Line == pos.Line && p.Col == pos.Col && p.Hits > 0 {
-						isCovered = true
-						break
-					}
+			coveredSet := make(map[Position]bool)
+			for _, p := range profile.Files[filename] {
+				if p.Hits > 0 {
+					coveredSet[Position{Line: p.Line, Col: p.Col}] = true
 				}
-				if isCovered {
+			}
+			for _, mp := range manifest.Files[filename] {
+				if coveredSet[Position{Line: mp.Line, Col: mp.Col}] {
 					lineCovered[mp.Line] = true
 				} else {
 					lineUncovered[mp.Line] = true
@@ -267,7 +264,7 @@ func generateHTMLReport(w io.Writer, profile *Profile, manifest *Manifest, outpu
 			}
 		}
 
-		lines := strings.Split(string(source), "\n")
+		lines := strings.Split(strings.TrimRight(string(source), "\n"), "\n")
 		for i, line := range lines {
 			lineNum := uint32(i + 1)
 			li := lineInfo{Number: i + 1, Text: line}

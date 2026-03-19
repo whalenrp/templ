@@ -31,6 +31,10 @@ func LoadManifest(path string) (*Manifest, error) {
 		return nil, fmt.Errorf("failed to decode manifest %s: %w", path, err)
 	}
 
+	if m.Version != "1" {
+		return nil, fmt.Errorf("unsupported manifest version %q in %s, expected \"1\"", m.Version, path)
+	}
+
 	return &m, nil
 }
 
