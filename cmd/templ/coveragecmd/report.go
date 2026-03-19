@@ -1,9 +1,11 @@
 package coveragecmd
 
 import (
+	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
+	"os"
 	"sort"
 )
 
@@ -166,6 +168,76 @@ func generateHTMLReport(w io.Writer, profile *Profile, manifest *Manifest, outpu
 	return fmt.Errorf("HTML report not yet implemented")
 }
 
+// JSONReport is the output structure for JSON coverage reports.
+type JSONReport struct {
+	Version string                       `json:"version"`
+	Total   JSONReportSummary            `json:"total"`
+	Files   map[string]JSONReportSummary `json:"files"`
+}
+
+// JSONReportSummary contains coverage statistics for a file or total.
+type JSONReportSummary struct {
+	Covered    int     `json:"covered"`
+	Total      int     `json:"total,omitempty"`
+	Percentage float64 `json:"percentage,omitempty"`
+}
+
 func generateJSONReport(w io.Writer, profile *Profile, manifest *Manifest, outputPath string) error {
-	return fmt.Errorf("JSON report not yet implemented")
+	report := JSONReport{
+		Version: "1",
+		Files:   make(map[string]JSONReportSummary),
+	}
+
+	allFiles := make(map[string]bool)
+	if manifest != nil {
+		for f := range manifest.Files {
+			allFiles[f] = true
+		}
+	}
+	for f := range profile.Files {
+		allFiles[f] = true
+	}
+
+	totalCovered, totalTotal := 0, 0
+	for filename := range allFiles {
+		summary := JSONReportSummary{}
+		var covered int
+
+		if manifest != nil {
+			if mPoints, ok := manifest.Files[filename]; ok {
+				covered = countCoveredAgainstManifest(profile.Files[filename], mPoints)
+				summary.Total = len(mPoints)
+				summary.Percentage = percentage(covered, len(mPoints))
+				totalTotal += len(mPoints)
+			} else {
+				covered = countCovered(profile.Files[filename])
+			}
+		} else {
+			covered = countCovered(profile.Files[filename])
+		}
+		summary.Covered = covered
+		totalCovered += covered
+		report.Files[filename] = summary
+	}
+
+	if manifest != nil {
+		report.Total = JSONReportSummary{
+			Covered:    totalCovered,
+			Total:      totalTotal,
+			Percentage: percentage(totalCovered, totalTotal),
+		}
+	} else {
+		report.Total = JSONReportSummary{Covered: totalCovered}
+	}
+
+	data, err := json.MarshalIndent(report, "", "  ")
+	if err != nil {
+		return fmt.Errorf("failed to marshal JSON report: %w", err)
+	}
+
+	if outputPath != "" {
+		return os.WriteFile(outputPath, data, 0644)
+	}
+	_, err = w.Write(data)
+	return err
 }
