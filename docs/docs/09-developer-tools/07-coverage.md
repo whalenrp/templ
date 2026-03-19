@@ -70,6 +70,32 @@ Supports glob patterns:
 templ coverage merge -i=coverage/**/*.json -o=coverage.json
 ```
 
+### Generate Reports
+
+Generate a coverage manifest alongside instrumented templates:
+
+```bash
+templ generate --coverage --coverage-manifest=coverage-manifest.json
+```
+
+View coverage in the terminal:
+
+```bash
+templ coverage report -i=coverage/*.json -m=coverage-manifest.json
+```
+
+Generate an HTML report with annotated source:
+
+```bash
+templ coverage report -i=coverage/*.json -m=coverage-manifest.json -html -o=coverage.html
+```
+
+Generate a JSON report for CI integration:
+
+```bash
+templ coverage report -i=coverage/*.json -m=coverage-manifest.json -json
+```
+
 ## Profile Format
 
 Coverage profiles are JSON files:
