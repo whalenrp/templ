@@ -4,6 +4,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"sort"
 )
 
 func runReport(w io.Writer, args []string) error {
@@ -68,7 +69,97 @@ func runReport(w io.Writer, args []string) error {
 }
 
 func generateTerminalReport(w io.Writer, profile *Profile, manifest *Manifest) error {
-	return fmt.Errorf("terminal report not yet implemented")
+	type fileStat struct {
+		name    string
+		covered int
+		total   int
+	}
+
+	var stats []fileStat
+
+	if manifest != nil {
+		for filename, mPoints := range manifest.Files {
+			covered := countCoveredAgainstManifest(profile.Files[filename], mPoints)
+			stats = append(stats, fileStat{name: filename, covered: covered, total: len(mPoints)})
+		}
+		// Include profile-only files (stale manifest)
+		for filename, pPoints := range profile.Files {
+			if _, inManifest := manifest.Files[filename]; !inManifest {
+				stats = append(stats, fileStat{name: filename, covered: countCovered(pPoints), total: -1})
+			}
+		}
+	} else {
+		for filename, pPoints := range profile.Files {
+			stats = append(stats, fileStat{name: filename, covered: countCovered(pPoints), total: -1})
+		}
+	}
+
+	sort.Slice(stats, func(i, j int) bool {
+		return stats[i].name < stats[j].name
+	})
+
+	maxLen := len("total")
+	for _, s := range stats {
+		if len(s.name) > maxLen {
+			maxLen = len(s.name)
+		}
+	}
+
+	totalCovered, totalTotal := 0, 0
+	hasPercentages := manifest != nil
+	for _, s := range stats {
+		totalCovered += s.covered
+		if s.total >= 0 {
+			totalTotal += s.total
+			fmt.Fprintf(w, "%-*s  %5.1f%%  (%d/%d)\n", maxLen, s.name,
+				percentage(s.covered, s.total), s.covered, s.total)
+		} else {
+			fmt.Fprintf(w, "%-*s  %d points covered\n", maxLen, s.name, s.covered)
+		}
+	}
+
+	if hasPercentages {
+		fmt.Fprintf(w, "%-*s  %5.1f%%  (%d/%d)\n", maxLen, "total",
+			percentage(totalCovered, totalTotal), totalCovered, totalTotal)
+	} else {
+		fmt.Fprintf(w, "%-*s  %d points covered\n", maxLen, "total", totalCovered)
+	}
+
+	return nil
+}
+
+func percentage(covered, total int) float64 {
+	if total == 0 {
+		return 0
+	}
+	return float64(covered) / float64(total) * 100
+}
+
+func countCovered(points []CoveragePoint) int {
+	covered := 0
+	for _, p := range points {
+		if p.Hits > 0 {
+			covered++
+		}
+	}
+	return covered
+}
+
+// countCoveredAgainstManifest counts manifest points that have a matching profile point with hits > 0.
+func countCoveredAgainstManifest(profilePoints []CoveragePoint, manifestPoints []ManifestPoint) int {
+	coveredSet := make(map[Position]bool)
+	for _, p := range profilePoints {
+		if p.Hits > 0 {
+			coveredSet[Position{Line: p.Line, Col: p.Col}] = true
+		}
+	}
+	covered := 0
+	for _, mp := range manifestPoints {
+		if coveredSet[Position{Line: mp.Line, Col: mp.Col}] {
+			covered++
+		}
+	}
+	return covered
 }
 
 func generateHTMLReport(w io.Writer, profile *Profile, manifest *Manifest, outputPath string) error {
