@@ -35,6 +35,8 @@ Args:
     Set to true to include the current time in the generated code.
   -coverage
     Set to true to enable coverage tracking instrumentation in generated code.
+  -coverage-manifest string
+    Output path for coverage manifest (used with --coverage). Default: coverage-manifest.json.
   -watch
     Set to true to watch the path for changes and regenerate code.
   -watch-pattern <regexp>
@@ -92,6 +94,7 @@ func NewArguments(stdout, stderr io.Writer, args []string) (cmdArgs Arguments, l
 	cmd.BoolVar(&cmdArgs.IncludeVersion, "include-version", true, "")
 	cmd.BoolVar(&cmdArgs.IncludeTimestamp, "include-timestamp", false, "")
 	cmd.BoolVar(&cmdArgs.Coverage, "coverage", false, "")
+	cmd.StringVar(&cmdArgs.CoverageManifest, "coverage-manifest", "coverage-manifest.json", "")
 	cmd.BoolVar(&cmdArgs.Watch, "watch", false, "")
 	watchPatternFlag := cmd.String("watch-pattern", defaultWatchPattern, "")
 	ignorePatternFlag := cmd.String("ignore-pattern", "", "")
@@ -170,6 +173,7 @@ type Arguments struct {
 	IncludeVersion                  bool
 	IncludeTimestamp                bool
 	Coverage                        bool
+	CoverageManifest                string
 	// PPROFPort is the port to run the pprof server on.
 	PPROFPort         int
 	KeepOrphanedFiles bool

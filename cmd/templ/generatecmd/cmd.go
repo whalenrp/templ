@@ -105,7 +105,16 @@ func (cmd Generate) Run(ctx context.Context) (err error) {
 			Name: cmd.Args.FileName,
 			Op:   fsnotify.Create,
 		})
-		return err
+		if err != nil {
+			return err
+		}
+		if cmd.Args.Coverage && cmd.Args.CoverageManifest != "" {
+			manifest := fseh.BuildManifest()
+			if err := manifest.Write(cmd.Args.CoverageManifest); err != nil {
+				return fmt.Errorf("failed to write coverage manifest: %w", err)
+			}
+		}
+		return nil
 	}
 
 	// Start timer.
@@ -179,6 +188,15 @@ func (cmd Generate) Run(ctx context.Context) (err error) {
 	}
 
 	cmd.Log.Info("Complete", slog.Int("updates", updates), slog.Duration("duration", time.Since(start)))
+
+	if cmd.Args.Coverage && cmd.Args.CoverageManifest != "" && !cmd.Args.Watch {
+		manifest := fseh.BuildManifest()
+		if err := manifest.Write(cmd.Args.CoverageManifest); err != nil {
+			return fmt.Errorf("failed to write coverage manifest: %w", err)
+		}
+		cmd.Log.Info("Coverage manifest written", slog.String("path", cmd.Args.CoverageManifest))
+	}
+
 	return nil
 }
 

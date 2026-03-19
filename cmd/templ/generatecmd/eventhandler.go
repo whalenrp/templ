@@ -15,8 +15,10 @@ import (
 	"path"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
+	"github.com/a-h/templ/cmd/templ/coveragecmd"
 	"github.com/a-h/templ/cmd/templ/visualize"
 	"github.com/a-h/templ/generator"
 	"github.com/a-h/templ/internal/syncmap"
@@ -66,6 +68,7 @@ func NewFSEventHandler(
 		keepOrphanedFiles:     keepOrphanedFiles,
 		writer:                fileWriter,
 		lazy:                  lazy,
+		coveragePoints:        make(map[string][]generator.CoveragePoint),
 	}
 	return fseh
 }
@@ -85,6 +88,8 @@ type FSEventHandler struct {
 	keepOrphanedFiles     bool
 	writer                FileWriterFunc
 	lazy                  bool
+	coveragePointsMu      sync.Mutex
+	coveragePoints        map[string][]generator.CoveragePoint
 }
 
 type GenerateResult struct {
@@ -206,6 +211,12 @@ func (h *FSEventHandler) generate(ctx context.Context, fileName string) (result 
 		return GenerateResult{}, nil, fmt.Errorf("%s generation error: %w", fileName, err)
 	}
 
+	if len(generatorOutput.CoveragePoints) > 0 {
+		h.coveragePointsMu.Lock()
+		h.coveragePoints[relFilePath] = generatorOutput.CoveragePoints
+		h.coveragePointsMu.Unlock()
+	}
+
 	formattedGoCode, err := format.Source(b.Bytes())
 	if err != nil {
 		err = remapErrorList(err, generatorOutput.SourceMap, fileName)
@@ -250,6 +261,24 @@ func (h *FSEventHandler) generate(ctx context.Context, fileName string) (result 
 	}
 
 	return result, parsedDiagnostics, err
+}
+
+// BuildManifest creates a coverage manifest from the collected coverage points.
+func (h *FSEventHandler) BuildManifest() *coveragecmd.Manifest {
+	h.coveragePointsMu.Lock()
+	defer h.coveragePointsMu.Unlock()
+	m := &coveragecmd.Manifest{
+		Version: "1",
+		Files:   make(map[string][]coveragecmd.ManifestPoint),
+	}
+	for filename, points := range h.coveragePoints {
+		mps := make([]coveragecmd.ManifestPoint, len(points))
+		for i, p := range points {
+			mps[i] = coveragecmd.ManifestPoint{Line: p.Line, Col: p.Col}
+		}
+		m.Files[filename] = mps
+	}
+	return m
 }
 
 // Takes an error from the formatter and attempts to convert the positions reported in the target file to their positions
