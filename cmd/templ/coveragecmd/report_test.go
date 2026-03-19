@@ -3,6 +3,8 @@ package coveragecmd
 import (
 	"bytes"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -143,5 +145,79 @@ func TestJSONReportWithoutManifest(t *testing.T) {
 	}
 	if report.Files["a.templ"].Covered != 1 {
 		t.Errorf("expected covered=1, got %d", report.Files["a.templ"].Covered)
+	}
+}
+
+func TestHTMLReport(t *testing.T) {
+	dir := t.TempDir()
+	templFile := filepath.Join(dir, "test.templ")
+	os.WriteFile(templFile, []byte("package test\n\ntempl Hello() {\n\t<div>hello</div>\n}\n"), 0644)
+
+	profile := &Profile{
+		Version: "1",
+		Mode:    "count",
+		Files: map[string][]CoveragePoint{
+			templFile: {
+				{Line: 3, Col: 1, Hits: 5},
+				{Line: 4, Col: 0, Hits: 0},
+			},
+		},
+	}
+	manifest := &Manifest{
+		Version: "1",
+		Files: map[string][]ManifestPoint{
+			templFile: {{Line: 3, Col: 1}, {Line: 4, Col: 0}},
+		},
+	}
+
+	outputPath := filepath.Join(dir, "coverage.html")
+	var buf bytes.Buffer
+	if err := generateHTMLReport(&buf, profile, manifest, outputPath); err != nil {
+		t.Fatal(err)
+	}
+
+	data, err := os.ReadFile(outputPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	html := string(data)
+
+	if !strings.Contains(html, "<html") {
+		t.Error("expected HTML document")
+	}
+	if !strings.Contains(html, "test.templ") {
+		t.Error("expected filename in report")
+	}
+	if !strings.Contains(html, "covered") {
+		t.Error("expected coverage class in report")
+	}
+}
+
+func TestHTMLReportMissingSource(t *testing.T) {
+	profile := &Profile{
+		Version: "1",
+		Mode:    "count",
+		Files: map[string][]CoveragePoint{
+			"/nonexistent/test.templ": {{Line: 1, Col: 0, Hits: 1}},
+		},
+	}
+	manifest := &Manifest{
+		Version: "1",
+		Files: map[string][]ManifestPoint{
+			"/nonexistent/test.templ": {{Line: 1, Col: 0}},
+		},
+	}
+
+	dir := t.TempDir()
+	outputPath := filepath.Join(dir, "coverage.html")
+	var buf bytes.Buffer
+	err := generateHTMLReport(&buf, profile, manifest, outputPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	data, _ := os.ReadFile(outputPath)
+	if !strings.Contains(string(data), "Source not available") {
+		t.Error("expected 'Source not available' for missing file")
 	}
 }
