@@ -67,10 +67,17 @@ func WithCoverage(enabled bool) GenerateOpt {
 	}
 }
 
+// CoveragePoint represents a coverage instrumentation location in the template source.
+type CoveragePoint struct {
+	Line uint32
+	Col  uint32
+}
+
 type GeneratorOutput struct {
-	Options   GeneratorOptions  `json:"meta"`
-	SourceMap *parser.SourceMap `json:"sourceMap"`
-	Literals  []string          `json:"literals"`
+	Options        GeneratorOptions  `json:"meta"`
+	SourceMap      *parser.SourceMap `json:"sourceMap"`
+	Literals       []string          `json:"literals"`
+	CoveragePoints []CoveragePoint   `json:"coveragePoints,omitempty"`
 }
 
 type GeneratorOptions struct {
@@ -151,15 +158,17 @@ func Generate(template *parser.TemplateFile, w io.Writer, opts ...GenerateOpt) (
 	op.Options = g.options
 	op.SourceMap = g.sourceMap
 	op.Literals = g.w.Literals
+	op.CoveragePoints = g.coveragePoints
 	return op, nil
 }
 
 type generator struct {
-	tf          *parser.TemplateFile
-	w           *RangeWriter
-	sourceMap   *parser.SourceMap
-	variableID  int
-	childrenVar string
+	tf             *parser.TemplateFile
+	w              *RangeWriter
+	sourceMap      *parser.SourceMap
+	variableID     int
+	childrenVar    string
+	coveragePoints []CoveragePoint
 
 	options GeneratorOptions
 }
@@ -733,6 +742,7 @@ func (g *generator) writeIfExpression(indentLevel int, n *parser.IfExpression, n
 		if _, err = g.w.WriteIndent(indentLevel, trackingCall); err != nil {
 			return err
 		}
+		g.coveragePoints = append(g.coveragePoints, CoveragePoint{Line: uint32(n.Range.From.Line), Col: uint32(n.Range.From.Col)})
 	}
 	// if
 	if _, err = g.w.WriteIndent(indentLevel, `if `); err != nil {
@@ -775,6 +785,7 @@ func (g *generator) writeIfExpression(indentLevel int, n *parser.IfExpression, n
 				if _, err = g.w.WriteIndent(indentLevel, trackingCall); err != nil {
 					return err
 				}
+				g.coveragePoints = append(g.coveragePoints, CoveragePoint{Line: uint32(elseIf.Range.From.Line), Col: uint32(elseIf.Range.From.Col)})
 			}
 			if err = g.writeNodes(indentLevel, stripLeadingAndTrailingWhitespace(elseIf.Then), nextNode); err != nil {
 				return err
@@ -810,6 +821,7 @@ func (g *generator) writeSwitchExpression(indentLevel int, n *parser.SwitchExpre
 		if _, err = g.w.WriteIndent(indentLevel, trackingCall); err != nil {
 			return err
 		}
+		g.coveragePoints = append(g.coveragePoints, CoveragePoint{Line: uint32(n.Range.From.Line), Col: uint32(n.Range.From.Col)})
 	}
 	// switch
 	if _, err = g.w.WriteIndent(indentLevel, `switch `); err != nil {
@@ -840,6 +852,7 @@ func (g *generator) writeSwitchExpression(indentLevel int, n *parser.SwitchExpre
 				if _, err = g.w.WriteIndent(indentLevel, trackingCall); err != nil {
 					return err
 				}
+				g.coveragePoints = append(g.coveragePoints, CoveragePoint{Line: uint32(c.Expression.Range.From.Line), Col: uint32(c.Expression.Range.From.Col)})
 			}
 			if err = g.writeNodes(indentLevel, stripLeadingAndTrailingWhitespace(c.Children), next); err != nil {
 				return err
@@ -861,6 +874,7 @@ func (g *generator) writeChildrenExpression(indentLevel int, n *parser.ChildrenE
 		if _, err = g.w.WriteIndent(indentLevel, trackingCall); err != nil {
 			return err
 		}
+		g.coveragePoints = append(g.coveragePoints, CoveragePoint{Line: uint32(n.Range.From.Line), Col: uint32(n.Range.From.Col)})
 	}
 	if _, err = g.w.WriteIndent(indentLevel, fmt.Sprintf("templ_7745c5c3_Err = %s.Render(ctx, templ_7745c5c3_Buffer)\n", g.childrenVar)); err != nil {
 		return err
@@ -878,6 +892,7 @@ func (g *generator) writeTemplElementExpression(indentLevel int, n *parser.Templ
 		if _, err = g.w.WriteIndent(indentLevel, trackingCall); err != nil {
 			return err
 		}
+		g.coveragePoints = append(g.coveragePoints, CoveragePoint{Line: uint32(n.Range.From.Line), Col: uint32(n.Range.From.Col)})
 	}
 	if len(n.Children) == 0 {
 		return g.writeSelfClosingTemplElementExpression(indentLevel, n)
@@ -978,6 +993,7 @@ func (g *generator) writeForExpression(indentLevel int, n *parser.ForExpression,
 		if _, err = g.w.WriteIndent(indentLevel, trackingCall); err != nil {
 			return err
 		}
+		g.coveragePoints = append(g.coveragePoints, CoveragePoint{Line: uint32(n.Range.From.Line), Col: uint32(n.Range.From.Col)})
 	}
 	// for
 	if _, err = g.w.WriteIndent(indentLevel, `for `); err != nil {
@@ -1050,6 +1066,7 @@ func (g *generator) writeElement(indentLevel int, n *parser.Element) (err error)
 		if _, err = g.w.WriteIndent(indentLevel, trackingCall); err != nil {
 			return err
 		}
+		g.coveragePoints = append(g.coveragePoints, CoveragePoint{Line: uint32(n.Range.From.Line), Col: uint32(n.Range.From.Col)})
 	}
 	if len(n.Attributes) == 0 {
 		// <div>
@@ -1092,6 +1109,7 @@ func (g *generator) writeElement(indentLevel int, n *parser.Element) (err error)
 		if _, err = g.w.WriteIndent(indentLevel, trackingCall); err != nil {
 			return err
 		}
+		g.coveragePoints = append(g.coveragePoints, CoveragePoint{Line: uint32(n.Range.To.Line), Col: uint32(n.Range.To.Col)})
 	}
 	// </div>
 	if _, err = g.w.WriteStringLiteral(indentLevel, fmt.Sprintf(`</%s>`, html.EscapeString(n.Name))); err != nil {
@@ -1730,6 +1748,7 @@ func (g *generator) writeStringExpression(indentLevel int, e parser.Expression) 
 		if _, err = g.w.WriteIndent(indentLevel, trackingCall); err != nil {
 			return err
 		}
+		g.coveragePoints = append(g.coveragePoints, CoveragePoint{Line: uint32(e.Range.From.Line), Col: uint32(e.Range.From.Col)})
 	}
 
 	var r parser.Range
@@ -1786,6 +1805,7 @@ func (g *generator) writeText(indentLevel int, n *parser.Text) (err error) {
 		if _, err = g.w.WriteIndent(indentLevel, trackingCall); err != nil {
 			return err
 		}
+		g.coveragePoints = append(g.coveragePoints, CoveragePoint{Line: uint32(n.Range.From.Line), Col: uint32(n.Range.From.Col)})
 	}
 	_, err = g.w.WriteStringLiteral(indentLevel, escapeQuotes(n.Value))
 	return err
