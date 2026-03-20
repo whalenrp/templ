@@ -34,32 +34,97 @@ type CoverageProfile struct {
 
 // CoverageRegistry tracks coverage data during test execution
 type CoverageRegistry struct {
-	mu    sync.Mutex
-	files map[string]map[Position]uint32 // filename → position → hit count
+	mu       sync.Mutex
+	files    map[string]map[Position]uint32 // filename → position → hit count
+	coverDir string                         // captured at init time, used at flush time
 }
 
 var (
 	coverageRegistry *CoverageRegistry
-	signalOnce       sync.Once
+	coverageOnce     sync.Once
 )
 
-// initCoverage initializes the coverage registry if TEMPLCOVERDIR is set
-func initCoverage() {
-	if os.Getenv("TEMPLCOVERDIR") != "" {
-		coverageRegistry = &CoverageRegistry{
-			files: make(map[string]map[Position]uint32),
-		}
+// EnableCoverage initializes the coverage registry for non-test use cases (e.g. servers).
+// For test binaries, use RunWithCoverage instead.
+// Unlike the old EnableCoverageForTesting(), this requires TEMPLCOVERDIR to be set —
+// it won't initialize the registry without a target directory.
+func EnableCoverage() {
+	dir := os.Getenv("TEMPLCOVERDIR")
+	if dir == "" {
+		return
 	}
+	coverageOnce.Do(func() {
+		coverageRegistry = &CoverageRegistry{
+			files:    make(map[string]map[Position]uint32),
+			coverDir: dir,
+		}
+	})
 }
 
-// EnableCoverageForTesting initializes coverage for tests
-// Call this in tests before rendering templates if TEMPLCOVERDIR wasn't set before init
-func EnableCoverageForTesting() {
-	if coverageRegistry == nil {
-		coverageRegistry = &CoverageRegistry{
-			files: make(map[string]map[Position]uint32),
-		}
+// TestRunner is implemented by *testing.M (which has a Run() method).
+type TestRunner interface {
+	Run() int
+}
+
+// RunWithCoverage wraps m.Run() with coverage lifecycle management.
+// If TEMPLCOVERDIR is not set, it calls m.Run() directly with zero overhead.
+// Safe to leave in permanently — it's a no-op without TEMPLCOVERDIR.
+func RunWithCoverage(m TestRunner) int {
+	dir := os.Getenv("TEMPLCOVERDIR")
+	if dir == "" {
+		return m.Run()
 	}
+
+	coverageOnce.Do(func() {
+		coverageRegistry = &CoverageRegistry{
+			files:    make(map[string]map[Position]uint32),
+			coverDir: dir,
+		}
+	})
+
+	done := make(chan struct{})
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
+	go func() {
+		select {
+		case <-sigChan:
+			coverageRegistry.Flush()
+			os.Exit(1)
+		case <-done:
+			return
+		}
+	}()
+
+	code := m.Run()
+
+	signal.Stop(sigChan)
+	close(done)
+	coverageRegistry.Flush()
+	return code
+}
+
+// CoverageSnapshot returns a deep copy of current coverage data.
+// Returns nil if coverage is not enabled. Thread-safe.
+func CoverageSnapshot() map[string][]CoveragePoint {
+	if coverageRegistry == nil {
+		return nil
+	}
+	coverageRegistry.mu.Lock()
+	defer coverageRegistry.mu.Unlock()
+
+	result := make(map[string][]CoveragePoint, len(coverageRegistry.files))
+	for filename, positions := range coverageRegistry.files {
+		points := make([]CoveragePoint, 0, len(positions))
+		for pos, hits := range positions {
+			points = append(points, CoveragePoint{
+				Line: pos.Line,
+				Col:  pos.Col,
+				Hits: hits,
+			})
+		}
+		result[filename] = points
+	}
+	return result
 }
 
 // Record increments the hit count for a coverage point
@@ -124,19 +189,16 @@ func (r *CoverageRegistry) WriteProfile(path string) error {
 
 // Flush writes the coverage profile to disk
 func (r *CoverageRegistry) Flush() error {
-	outputDir := os.Getenv("TEMPLCOVERDIR")
-	if outputDir == "" {
-		outputDir = "."
+	if r.coverDir == "" {
+		return nil
 	}
 
-	// Create directory if it doesn't exist
-	if err := os.MkdirAll(outputDir, 0755); err != nil {
+	if err := os.MkdirAll(r.coverDir, 0755); err != nil {
 		return fmt.Errorf("failed to create output directory: %w", err)
 	}
 
-	// Generate unique filename
-	filename := fmt.Sprintf("templ-%d-%d.json", os.Getpid(), time.Now().Unix())
-	path := filepath.Join(outputDir, filename)
+	filename := fmt.Sprintf("templ-%d-%d.json", os.Getpid(), time.Now().UnixNano())
+	path := filepath.Join(r.coverDir, filename)
 
 	return r.WriteProfile(path)
 }
@@ -148,20 +210,4 @@ func FlushCoverage() error {
 		return nil
 	}
 	return coverageRegistry.Flush()
-}
-
-func init() {
-	initCoverage()
-	if coverageRegistry != nil {
-		// Best-effort auto-flush on interrupt signals (once per process)
-		signalOnce.Do(func() {
-			go func() {
-				sigChan := make(chan os.Signal, 1)
-				signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
-				<-sigChan
-				FlushCoverage()
-				os.Exit(1)
-			}()
-		})
-	}
 }

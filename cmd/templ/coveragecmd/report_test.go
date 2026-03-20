@@ -172,7 +172,7 @@ func TestHTMLReport(t *testing.T) {
 
 	outputPath := filepath.Join(dir, "coverage.html")
 	var buf bytes.Buffer
-	if err := generateHTMLReport(&buf, profile, manifest, outputPath); err != nil {
+	if err := generateHTMLReport(&buf, profile, manifest, outputPath, "/"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -211,7 +211,7 @@ func TestHTMLReportMissingSource(t *testing.T) {
 	dir := t.TempDir()
 	outputPath := filepath.Join(dir, "coverage.html")
 	var buf bytes.Buffer
-	err := generateHTMLReport(&buf, profile, manifest, outputPath)
+	err := generateHTMLReport(&buf, profile, manifest, outputPath, "")
 	if err != nil {
 		t.Fatal(err)
 	}

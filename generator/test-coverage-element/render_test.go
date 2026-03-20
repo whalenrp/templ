@@ -2,20 +2,22 @@ package testcoverageelement
 
 import (
 	"context"
-	"encoding/json"
 	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 
 	templruntime "github.com/a-h/templ/runtime"
 )
 
+func TestMain(m *testing.M) {
+	os.Exit(templruntime.RunWithCoverage(m))
+}
+
 func TestElementCoverage(t *testing.T) {
-	coverDir := t.TempDir()
-	t.Setenv("TEMPLCOVERDIR", coverDir)
-	templruntime.EnableCoverageForTesting()
-	defer templruntime.FlushCoverage()
+	snap := templruntime.CoverageSnapshot()
+	if snap == nil {
+		t.Skip("coverage not enabled (set TEMPLCOVERDIR)")
+	}
 
 	ctx := context.Background()
 	var buf strings.Builder
@@ -24,34 +26,12 @@ func TestElementCoverage(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := templruntime.FlushCoverage(); err != nil {
-		t.Fatal(err)
-	}
-
-	files, err := filepath.Glob(filepath.Join(coverDir, "templ-*.json"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(files) == 0 {
-		t.Fatal("no coverage profile generated")
-	}
-
-	data, err := os.ReadFile(files[0])
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	var profile templruntime.CoverageProfile
-	if err := json.Unmarshal(data, &profile); err != nil {
-		t.Fatal(err)
-	}
-
-	points := profile.Files["generator/test-coverage-element/template.templ"]
+	snap = templruntime.CoverageSnapshot()
+	points := snap["generator/test-coverage-element/template.templ"]
 	if len(points) == 0 {
 		t.Fatal("expected coverage points")
 	}
 
-	// div opening + closing, button opening + closing, input opening, img opening = 6
 	if len(points) < 6 {
 		t.Errorf("expected at least 6 coverage points, got %d", len(points))
 	}

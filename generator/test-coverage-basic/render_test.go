@@ -1,95 +1,55 @@
 package testcoveragebasic
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"os"
-	"path/filepath"
+	"strings"
 	"testing"
 
 	templruntime "github.com/a-h/templ/runtime"
 )
 
+func TestMain(m *testing.M) {
+	os.Exit(templruntime.RunWithCoverage(m))
+}
+
 func TestCoverageIntegration(t *testing.T) {
-	// Set up coverage directory
-	coverageDir := t.TempDir()
-	t.Setenv("TEMPLCOVERDIR", coverageDir)
+	snap := templruntime.CoverageSnapshot()
+	if snap == nil {
+		t.Skip("coverage not enabled (set TEMPLCOVERDIR)")
+	}
 
-	// Enable coverage for testing (in case TEMPLCOVERDIR wasn't set before init)
-	templruntime.EnableCoverageForTesting()
+	ctx := context.Background()
+	var buf strings.Builder
 
-	// Render template with both branches
-	var buf bytes.Buffer
-
-	// Render with show=true
-	if err := render(true).Render(context.Background(), &buf); err != nil {
+	if err := render(true).Render(ctx, &buf); err != nil {
 		t.Fatalf("render(true) failed: %v", err)
 	}
 
-	// Render with show=false
 	buf.Reset()
-	if err := render(false).Render(context.Background(), &buf); err != nil {
+	if err := render(false).Render(ctx, &buf); err != nil {
 		t.Fatalf("render(false) failed: %v", err)
 	}
 
-	// Explicitly flush coverage
-	if err := templruntime.FlushCoverage(); err != nil {
-		t.Fatalf("flush failed: %v", err)
-	}
+	snap = templruntime.CoverageSnapshot()
 
-	// Find profile file
-	files, err := filepath.Glob(filepath.Join(coverageDir, "templ-*.json"))
-	if err != nil || len(files) == 0 {
-		t.Fatalf("expected at least 1 profile file, found %d", len(files))
-	}
-
-	// Read profile
-	data, err := os.ReadFile(files[0])
-	if err != nil {
-		t.Fatalf("failed to read profile: %v", err)
-	}
-
-	var profile struct {
-		Version string
-		Mode    string
-		Files   map[string][]struct {
-			Line uint32
-			Col  uint32
-			Hits uint32
-		}
-	}
-
-	if err := json.Unmarshal(data, &profile); err != nil {
-		t.Fatalf("failed to parse profile: %v", err)
-	}
-
-	// Verify coverage was collected
-	// Note: The filename in the profile depends on how generator sets it
-	// Check if any file has coverage points
 	var totalPoints int
-	for _, points := range profile.Files {
+	var hasHits bool
+	for _, points := range snap {
 		totalPoints += len(points)
+		for _, pt := range points {
+			if pt.Hits > 0 {
+				hasHits = true
+			}
+		}
 	}
 
 	if totalPoints == 0 {
 		t.Error("no coverage points recorded")
 	}
-
-	t.Logf("Coverage collected: %d points across %d files", totalPoints, len(profile.Files))
-
-	// Verify at least some hits > 0 (templates were executed)
-	var hasHits bool
-	for _, points := range profile.Files {
-		for _, pt := range points {
-			if pt.Hits > 0 {
-				hasHits = true
-				break
-			}
-		}
-	}
-
 	if !hasHits {
-		t.Error("no coverage points were hit (templates may not have executed)")
+		t.Error("no coverage points were hit")
 	}
+
+	t.Logf("Coverage collected: %d points across %d files", totalPoints, len(snap))
 }

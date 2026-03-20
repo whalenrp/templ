@@ -8,24 +8,39 @@ import (
 	"testing"
 )
 
-func TestCoverageRegistry_InitializesWhenEnvSet(t *testing.T) {
+func TestEnableCoverage_InitializesWhenEnvSet(t *testing.T) {
+	oldRegistry := coverageRegistry
+	t.Cleanup(func() {
+		coverageRegistry = oldRegistry
+		coverageOnce = sync.Once{}
+	})
+
+	coverageRegistry = nil
+	coverageOnce = sync.Once{}
 	t.Setenv("TEMPLCOVERDIR", t.TempDir())
 
-	// Reset global state
-	coverageRegistry = nil
-	initCoverage()
+	EnableCoverage()
 
 	if coverageRegistry == nil {
 		t.Error("expected registry to initialize when TEMPLCOVERDIR set")
 	}
+	if coverageRegistry.coverDir == "" {
+		t.Error("expected coverDir to be set")
+	}
 }
 
-func TestCoverageRegistry_NilWhenEnvUnset(t *testing.T) {
-	os.Unsetenv("TEMPLCOVERDIR")
+func TestEnableCoverage_NilWhenEnvUnset(t *testing.T) {
+	oldRegistry := coverageRegistry
+	t.Cleanup(func() {
+		coverageRegistry = oldRegistry
+		coverageOnce = sync.Once{}
+	})
 
-	// Reset global state
 	coverageRegistry = nil
-	initCoverage()
+	coverageOnce = sync.Once{}
+	t.Setenv("TEMPLCOVERDIR", "")
+
+	EnableCoverage()
 
 	if coverageRegistry != nil {
 		t.Error("expected registry to be nil when TEMPLCOVERDIR unset")
@@ -161,10 +176,10 @@ func TestCoverageRegistry_WriteProfile(t *testing.T) {
 
 func TestCoverageRegistry_Flush(t *testing.T) {
 	tmpDir := t.TempDir()
-	t.Setenv("TEMPLCOVERDIR", tmpDir)
 
 	reg := &CoverageRegistry{
-		files: make(map[string]map[Position]uint32),
+		files:    make(map[string]map[Position]uint32),
+		coverDir: tmpDir,
 	}
 	reg.Record("test.templ", 5, 10)
 
@@ -196,22 +211,22 @@ func TestFlushCoverage_Explicit(t *testing.T) {
 	tmpDir := t.TempDir()
 	t.Setenv("TEMPLCOVERDIR", tmpDir)
 
-	// Save and restore
 	oldRegistry := coverageRegistry
-	t.Cleanup(func() { coverageRegistry = oldRegistry })
+	t.Cleanup(func() {
+		coverageRegistry = oldRegistry
+		coverageOnce = sync.Once{}
+	})
 
-	// Initialize fresh registry
-	initCoverage()
+	coverageRegistry = nil
+	coverageOnce = sync.Once{}
+	EnableCoverage()
 
-	// Record some coverage
 	CoverageTrack("test.templ", 5, 10)
 
-	// Explicitly flush
 	if err := FlushCoverage(); err != nil {
 		t.Fatalf("FlushCoverage failed: %v", err)
 	}
 
-	// Verify file was written
 	files, err := filepath.Glob(filepath.Join(tmpDir, "templ-*.json"))
 	if err != nil {
 		t.Fatalf("failed to glob files: %v", err)
@@ -219,5 +234,121 @@ func TestFlushCoverage_Explicit(t *testing.T) {
 
 	if len(files) != 1 {
 		t.Errorf("expected 1 profile file after explicit flush, found %d", len(files))
+	}
+}
+
+type mockRunner struct {
+	code int
+}
+
+func (m *mockRunner) Run() int { return m.code }
+
+func TestRunWithCoverage_NoOpWithoutEnv(t *testing.T) {
+	oldRegistry := coverageRegistry
+	t.Cleanup(func() {
+		coverageRegistry = oldRegistry
+		coverageOnce = sync.Once{}
+	})
+
+	coverageRegistry = nil
+	coverageOnce = sync.Once{}
+	t.Setenv("TEMPLCOVERDIR", "")
+
+	code := RunWithCoverage(&mockRunner{code: 0})
+	if code != 0 {
+		t.Errorf("expected exit code 0, got %d", code)
+	}
+	if coverageRegistry != nil {
+		t.Error("expected registry to remain nil without TEMPLCOVERDIR")
+	}
+}
+
+func TestRunWithCoverage_InitializesAndFlushes(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("TEMPLCOVERDIR", tmpDir)
+
+	oldRegistry := coverageRegistry
+	t.Cleanup(func() {
+		coverageRegistry = oldRegistry
+		coverageOnce = sync.Once{}
+	})
+
+	coverageRegistry = nil
+	coverageOnce = sync.Once{}
+
+	code := RunWithCoverage(&mockRunner{code: 0})
+	if code != 0 {
+		t.Errorf("expected exit code 0, got %d", code)
+	}
+	if coverageRegistry == nil {
+		t.Fatal("expected registry to be initialized")
+	}
+
+	files, err := filepath.Glob(filepath.Join(tmpDir, "templ-*.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(files) != 1 {
+		t.Errorf("expected 1 profile file, found %d", len(files))
+	}
+}
+
+func TestRunWithCoverage_PropagatesExitCode(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("TEMPLCOVERDIR", tmpDir)
+
+	oldRegistry := coverageRegistry
+	t.Cleanup(func() {
+		coverageRegistry = oldRegistry
+		coverageOnce = sync.Once{}
+	})
+
+	coverageRegistry = nil
+	coverageOnce = sync.Once{}
+
+	code := RunWithCoverage(&mockRunner{code: 42})
+	if code != 42 {
+		t.Errorf("expected exit code 42, got %d", code)
+	}
+}
+
+func TestCoverageSnapshot_ReturnsNilWhenDisabled(t *testing.T) {
+	oldRegistry := coverageRegistry
+	t.Cleanup(func() { coverageRegistry = oldRegistry })
+
+	coverageRegistry = nil
+
+	snap := CoverageSnapshot()
+	if snap != nil {
+		t.Error("expected nil snapshot when coverage disabled")
+	}
+}
+
+func TestCoverageSnapshot_ReturnsDeepCopy(t *testing.T) {
+	oldRegistry := coverageRegistry
+	t.Cleanup(func() { coverageRegistry = oldRegistry })
+
+	coverageRegistry = &CoverageRegistry{
+		files: make(map[string]map[Position]uint32),
+	}
+	CoverageTrack("test.templ", 5, 10)
+	CoverageTrack("test.templ", 5, 10)
+	CoverageTrack("test.templ", 7, 3)
+
+	snap := CoverageSnapshot()
+	if snap == nil {
+		t.Fatal("expected non-nil snapshot")
+	}
+
+	points := snap["test.templ"]
+	if len(points) != 2 {
+		t.Fatalf("expected 2 points, got %d", len(points))
+	}
+
+	// Verify it's a deep copy: mutating snap shouldn't affect registry
+	snap["test.templ"] = nil
+	snap2 := CoverageSnapshot()
+	if len(snap2["test.templ"]) != 2 {
+		t.Error("snapshot was not a deep copy")
 	}
 }

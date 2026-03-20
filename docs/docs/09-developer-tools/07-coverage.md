@@ -10,13 +10,32 @@ Template coverage tracks which parts of your templ templates execute during test
 templ generate --coverage
 ```
 
-### 2. Run tests with coverage collection
+### 2. Add TestMain to test packages
+
+Add this to any `_test.go` file in packages that render templ templates:
+
+```go
+import (
+    "os"
+    "testing"
+
+    templruntime "github.com/a-h/templ/runtime"
+)
+
+func TestMain(m *testing.M) {
+    os.Exit(templruntime.RunWithCoverage(m))
+}
+```
+
+`RunWithCoverage` is a no-op when `TEMPLCOVERDIR` is not set, so it's safe to leave in permanently. Without this, coverage data will be silently lost when tests exit.
+
+### 3. Run tests with coverage collection
 
 ```bash
 TEMPLCOVERDIR=coverage/unit go test ./...
 ```
 
-### 3. Merge coverage profiles
+### 4. Merge coverage profiles
 
 ```bash
 templ coverage merge -i=coverage/unit/*.json -o=coverage.json
@@ -27,6 +46,8 @@ templ coverage merge -i=coverage/unit/*.json -o=coverage.json
 When you generate templates with the `--coverage` flag, templ adds tracking calls before each coverage point (expressions, branches, loops, etc.). During test execution, these calls record which code executed.
 
 Coverage is only active when the `TEMPLCOVERDIR` environment variable is set. This ensures zero overhead in production.
+
+Test packages must also use `RunWithCoverage` in a `TestMain` function to ensure coverage data is flushed when tests complete. Setting `TEMPLCOVERDIR` alone is not sufficient — without `TestMain`, the coverage data accumulated during tests will be lost when the test binary exits.
 
 ## Coverage Points
 
@@ -48,6 +69,12 @@ Templ tracks execution at the expression and element level:
 ```bash
 # Generate instrumented templates
 templ generate --coverage
+
+# Ensure test packages have TestMain (one-time setup)
+# In each _test.go that renders templates:
+#   func TestMain(m *testing.M) {
+#       os.Exit(templruntime.RunWithCoverage(m))
+#   }
 
 # Run unit tests
 TEMPLCOVERDIR=coverage/unit go test ./...
@@ -128,11 +155,26 @@ Add to your CI workflow:
 # Generate with coverage
 templ generate --coverage
 
-# Run tests
+# Run tests (assumes TestMain with RunWithCoverage is already set up)
 TEMPLCOVERDIR=coverage go test ./...
 
 # Merge profiles
 templ coverage merge -i=coverage/*.json -o=coverage.json
+```
+
+## Server Coverage
+
+For non-test binaries (e.g., development servers), use `EnableCoverage()` and `FlushCoverage()` directly:
+
+```go
+import templruntime "github.com/a-h/templ/runtime"
+
+func main() {
+    templruntime.EnableCoverage()
+    defer templruntime.FlushCoverage()
+
+    // start server...
+}
 ```
 
 ## Tips

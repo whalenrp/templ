@@ -8,6 +8,7 @@ import (
 	htmltemplate "html/template"
 	"io"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 )
@@ -16,6 +17,7 @@ func runReport(w io.Writer, args []string) error {
 	fs := flag.NewFlagSet("report", flag.ExitOnError)
 	inputPaths := fs.String("i", "", "Comma-separated input coverage profiles or glob patterns")
 	manifestPath := fs.String("m", "", "Coverage manifest file")
+	sourceDir := fs.String("source-dir", ".", "Root directory for resolving template source paths")
 	htmlOutput := fs.Bool("html", false, "Generate HTML report")
 	jsonOutput := fs.Bool("json", false, "Generate JSON report")
 	outputPath := fs.String("o", "", "Output file path")
@@ -65,7 +67,7 @@ func runReport(w io.Writer, args []string) error {
 	// Dispatch to format-specific generator
 	switch {
 	case *htmlOutput:
-		return generateHTMLReport(w, merged, manifest, *outputPath)
+		return generateHTMLReport(w, merged, manifest, *outputPath, *sourceDir)
 	case *jsonOutput:
 		return generateJSONReport(w, merged, manifest, *outputPath)
 	default:
@@ -167,7 +169,7 @@ func countCoveredAgainstManifest(profilePoints []CoveragePoint, manifestPoints [
 	return covered
 }
 
-func generateHTMLReport(w io.Writer, profile *Profile, manifest *Manifest, outputPath string) error {
+func generateHTMLReport(w io.Writer, profile *Profile, manifest *Manifest, outputPath string, sourceDir string) error {
 	if outputPath == "" {
 		outputPath = "coverage.html"
 	}
@@ -226,7 +228,8 @@ func generateHTMLReport(w io.Writer, profile *Profile, manifest *Manifest, outpu
 		totalCovered += covered
 
 		// Read source file
-		source, err := os.ReadFile(filename)
+		sourcePath := filepath.Join(sourceDir, filename)
+		source, err := os.ReadFile(sourcePath)
 		if err != nil {
 			fd.Available = false
 			fd.Lines = []lineInfo{{Number: 1, Text: "Source not available"}}
