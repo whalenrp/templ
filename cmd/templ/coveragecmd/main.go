@@ -10,12 +10,14 @@ import (
 
 func Run(w io.Writer, args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: templ coverage <command>\nCommands: merge")
+		return fmt.Errorf("usage: templ coverage <command>\nCommands: merge, report")
 	}
 
 	switch args[0] {
 	case "merge":
 		return runMerge(w, args[1:])
+	case "report":
+		return runReport(w, args[1:])
 	default:
 		return fmt.Errorf("unknown command: %s", args[0])
 	}
@@ -34,15 +36,9 @@ func runMerge(w io.Writer, args []string) error {
 		return fmt.Errorf("-i flag required: specify input coverage files")
 	}
 
-	// Expand input paths (handle globs and comma-separated lists)
-	var files []string
-	for _, pattern := range strings.Split(*inputPaths, ",") {
-		pattern = strings.TrimSpace(pattern)
-		matches, err := filepath.Glob(pattern)
-		if err != nil {
-			return fmt.Errorf("invalid glob pattern %s: %w", pattern, err)
-		}
-		files = append(files, matches...)
+	files, err := expandInputPaths(*inputPaths)
+	if err != nil {
+		return err
 	}
 
 	if len(files) == 0 {
@@ -74,4 +70,18 @@ func runMerge(w io.Writer, args []string) error {
 
 	fmt.Fprintf(w, "Merged %d profiles into %s\n", len(profiles), *outputPath)
 	return nil
+}
+
+// expandInputPaths splits comma-separated patterns and expands globs.
+func expandInputPaths(inputPaths string) ([]string, error) {
+	var files []string
+	for _, pattern := range strings.Split(inputPaths, ",") {
+		pattern = strings.TrimSpace(pattern)
+		matches, err := filepath.Glob(pattern)
+		if err != nil {
+			return nil, fmt.Errorf("invalid glob pattern %s: %w", pattern, err)
+		}
+		files = append(files, matches...)
+	}
+	return files, nil
 }
