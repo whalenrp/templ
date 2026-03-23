@@ -11,6 +11,7 @@ import (
 	"syscall"
 
 	"github.com/a-h/templ"
+	"github.com/a-h/templ/cmd/templ/coveragecmd"
 	"github.com/a-h/templ/cmd/templ/fmtcmd"
 	"github.com/a-h/templ/cmd/templ/generatecmd"
 	"github.com/a-h/templ/cmd/templ/infocmd"
@@ -37,6 +38,7 @@ commands:
   fmt        Formats templ files
   lsp        Starts a language server for templ files
   info       Displays information about the templ environment
+  coverage   Manage template coverage profiles
   version    Prints the version
 `
 
@@ -54,6 +56,8 @@ func run(stdin io.Reader, stdout, stderr io.Writer, args []string) (code int) {
 		return fmtCmd(stdin, stdout, stderr, args[2:])
 	case "lsp":
 		return lspCmd(stdin, stdout, stderr, args[2:])
+	case "coverage":
+		return coverageCmd(stdout, stderr, args[2:])
 	case "version", "--version":
 		_, _ = fmt.Fprintln(stdout, templ.Version())
 		return 0
@@ -274,6 +278,16 @@ func lspCmd(stdin io.Reader, stdout, stderr io.Writer, args []string) (code int)
 	})
 	if err != nil {
 		_, _ = fmt.Fprintln(stderr, err.Error())
+		return 1
+	}
+	return 0
+}
+
+func coverageCmd(stdout, stderr io.Writer, args []string) (code int) {
+	err := coveragecmd.Run(stdout, args)
+	if err != nil {
+		_, _ = color.New(color.FgRed).Fprint(stderr, "(✗) ")
+		_, _ = fmt.Fprintln(stderr, "Command failed: "+err.Error())
 		return 1
 	}
 	return 0
