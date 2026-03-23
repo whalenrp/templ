@@ -1,0 +1,47 @@
+package testcoverageintegration
+
+templ Helper(msg string) {
+	<em>{ msg }</em>
+}
+
+templ Comprehensive(show bool, items []string) {
+	<div>
+		Plain text
+		{ "string expression" }
+
+		if show {
+			<p>If branch</p>
+		} else {
+			<p>Else branch</p>
+		}
+
+		switch len(items) {
+		case 0:
+			<p>Empty</p>
+		case 1:
+			<p>One</p>
+		default:
+			<p>Many</p>
+		}
+
+		for _, item := range items {
+			<li>{ item }</li>
+		}
+
+		@Helper("called")
+
+		<input type="text"/>
+	</div>
+}
+
+templ WithChildren() {
+	<section>
+		{ children... }
+	</section>
+}
+
+templ Main() {
+	@WithChildren() {
+		<span>Child content</span>
+	}
+}
