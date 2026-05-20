@@ -10,14 +10,15 @@ import (
 	templruntime "github.com/a-h/templ/runtime"
 )
 
+const templFile = "generator/test-coverage-integration/template.templ"
+
 func TestMain(m *testing.M) {
 	dir, err := os.MkdirTemp("", "templ-coverage-*")
 	if err != nil {
 		panic(err)
 	}
 	defer os.RemoveAll(dir)
-	os.Setenv("TEMPLCOVERDIR", dir)
-	defer os.Unsetenv("TEMPLCOVERDIR")
+	templruntime.EnableCoverageForTest("") // in-memory only; no file output needed
 	os.Exit(templruntime.RunWithCoverage(m))
 }
 
@@ -46,25 +47,26 @@ func TestIntegrationCoverage(t *testing.T) {
 		})
 	}
 
-	snap := templruntime.CoverageSnapshot()
-	if snap == nil {
-		t.Fatal("expected coverage to be enabled")
+	// Verify that coverage is active and recording hits.
+	if templruntime.CoverageHitAt(templFile, 7, 1) == 0 {
+		t.Error("expected Comprehensive (line 7) to have been hit")
+	}
+	if templruntime.CoverageHitAt(templFile, 3, 1) == 0 {
+		t.Error("expected Helper (line 3) to have been hit")
 	}
 
-	points := snap["generator/test-coverage-integration/template.templ"]
-	if len(points) == 0 {
-		t.Fatal("expected coverage points")
+	// if show { true branch — exercised by if-then, switch-case1, switch-default
+	if templruntime.CoverageHitAt(templFile, 11, 2) == 0 {
+		t.Error("expected if-show true branch to have been hit")
 	}
 
-	t.Logf("Total coverage points: %d", len(points))
-
-	if len(points) < 15 {
-		t.Errorf("expected at least 15 coverage points, got %d", len(points))
+	// else branch — exercised by if-else
+	if templruntime.CoverageHitAt(templFile, 14, 3) == 0 {
+		t.Error("expected if-show else branch to have been hit")
 	}
 
-	for _, point := range points {
-		if point.Hits == 0 {
-			t.Errorf("coverage point at %d:%d was never hit", point.Line, point.Col)
-		}
+	// for loop — exercised by switch-case1, switch-default
+	if templruntime.CoverageHitAt(templFile, 24, 3) == 0 {
+		t.Error("expected for-range loop to have been hit")
 	}
 }

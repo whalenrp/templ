@@ -1,354 +1,258 @@
 package runtime
 
 import (
-	"encoding/json"
+	"bufio"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 )
 
-func TestEnableCoverage_InitializesWhenEnvSet(t *testing.T) {
-	oldRegistry := coverageRegistry
+// resetCoverageState resets global coverage state for isolated unit tests.
+func resetCoverageState(t *testing.T) {
+	t.Helper()
+	old := coverageHits
+	oldOut := coverageOut
+	oldAppend := coverageAppend
 	t.Cleanup(func() {
-		coverageRegistry = oldRegistry
-		coverageOnce = sync.Once{}
+		coverageMu.Lock()
+		defer coverageMu.Unlock()
+		coverageHits = old
+		coverageOut = oldOut
+		coverageAppend = oldAppend
 	})
+	coverageMu.Lock()
+	defer coverageMu.Unlock()
+	coverageHits = nil
+	coverageOut = ""
+	coverageAppend = false
+}
 
-	coverageRegistry = nil
-	coverageOnce = sync.Once{}
-	t.Setenv("TEMPLCOVERDIR", t.TempDir())
+func TestCoverageTrack_NoOpWhenDisabled(t *testing.T) {
+	resetCoverageState(t)
+	// Should not panic.
+	CoverageTrack("test.templ", 5, 10)
+}
 
-	EnableCoverage()
+func TestCoverageTrack_RecordsWhenEnabled(t *testing.T) {
+	resetCoverageState(t)
+	coverageHits = make(map[string]map[coveragePos]uint32)
 
-	if coverageRegistry == nil {
-		t.Error("expected registry to initialize when TEMPLCOVERDIR set")
+	CoverageTrack("test.templ", 5, 10)
+	CoverageTrack("test.templ", 5, 10)
+	CoverageTrack("test.templ", 7, 3)
+
+	if got := CoverageHitAt("test.templ", 5, 10); got != 2 {
+		t.Errorf("expected 2 hits at (5,10), got %d", got)
 	}
-	if coverageRegistry.coverDir == "" {
-		t.Error("expected coverDir to be set")
+	if got := CoverageHitAt("test.templ", 7, 3); got != 1 {
+		t.Errorf("expected 1 hit at (7,3), got %d", got)
 	}
 }
 
-func TestEnableCoverage_NilWhenEnvUnset(t *testing.T) {
-	oldRegistry := coverageRegistry
-	t.Cleanup(func() {
-		coverageRegistry = oldRegistry
-		coverageOnce = sync.Once{}
-	})
+func TestCoverageTrack_Concurrent(t *testing.T) {
+	resetCoverageState(t)
+	coverageHits = make(map[string]map[coveragePos]uint32)
 
-	coverageRegistry = nil
-	coverageOnce = sync.Once{}
-	t.Setenv("TEMPLCOVERDIR", "")
-
-	EnableCoverage()
-
-	if coverageRegistry != nil {
-		t.Error("expected registry to be nil when TEMPLCOVERDIR unset")
-	}
-}
-
-func TestCoverageRegistry_Record(t *testing.T) {
-	reg := &CoverageRegistry{
-		files: make(map[string]map[Position]uint32),
-	}
-
-	// Record same position twice
-	reg.Record("test.templ", 5, 10)
-	reg.Record("test.templ", 5, 10)
-
-	// Record different position
-	reg.Record("test.templ", 7, 3)
-
-	// Verify hit counts
-	pos1 := Position{Line: 5, Col: 10}
-	if hits := reg.files["test.templ"][pos1]; hits != 2 {
-		t.Errorf("expected 2 hits for position (5,10), got %d", hits)
-	}
-
-	pos2 := Position{Line: 7, Col: 3}
-	if hits := reg.files["test.templ"][pos2]; hits != 1 {
-		t.Errorf("expected 1 hit for position (7,3), got %d", hits)
-	}
-}
-
-func TestCoverageRegistry_RecordConcurrent(t *testing.T) {
-	reg := &CoverageRegistry{
-		files: make(map[string]map[Position]uint32),
-	}
-
-	// Concurrent writes to same position
-	const goroutines = 100
-	const iterations = 100
-
+	const goroutines, iterations = 100, 100
 	var wg sync.WaitGroup
 	for i := 0; i < goroutines; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			for j := 0; j < iterations; j++ {
-				reg.Record("test.templ", 5, 10)
+				CoverageTrack("test.templ", 5, 10)
 			}
 		}()
 	}
-
 	wg.Wait()
 
-	pos := Position{Line: 5, Col: 10}
-	expected := uint32(goroutines * iterations)
-	if hits := reg.files["test.templ"][pos]; hits != expected {
-		t.Errorf("expected %d hits, got %d (data race?)", expected, hits)
+	if got := CoverageHitAt("test.templ", 5, 10); got != goroutines*iterations {
+		t.Errorf("expected %d hits, got %d (data race?)", goroutines*iterations, got)
 	}
 }
 
-func TestCoverageTrack_NoOpWhenDisabled(t *testing.T) {
-	// Save and restore global state
-	oldRegistry := coverageRegistry
-	t.Cleanup(func() { coverageRegistry = oldRegistry })
-
-	coverageRegistry = nil
-
-	// Should not panic
-	CoverageTrack("test.templ", 5, 10)
-}
-
-func TestCoverageTrack_RecordsWhenEnabled(t *testing.T) {
-	// Save and restore global state
-	oldRegistry := coverageRegistry
-	t.Cleanup(func() { coverageRegistry = oldRegistry })
-
-	coverageRegistry = &CoverageRegistry{
-		files: make(map[string]map[Position]uint32),
-	}
-
-	CoverageTrack("test.templ", 5, 10)
-
-	pos := Position{Line: 5, Col: 10}
-	if hits := coverageRegistry.files["test.templ"][pos]; hits != 1 {
-		t.Errorf("expected 1 hit, got %d", hits)
+func TestCoverageHitAt_ZeroWhenDisabled(t *testing.T) {
+	resetCoverageState(t)
+	if got := CoverageHitAt("test.templ", 5, 10); got != 0 {
+		t.Errorf("expected 0, got %d", got)
 	}
 }
 
-func TestCoverageRegistry_WriteProfile(t *testing.T) {
-	reg := &CoverageRegistry{
-		files: make(map[string]map[Position]uint32),
+func TestInitCoverage_AutoDetectCoverprofile(t *testing.T) {
+	resetCoverageState(t)
+
+	// Simulate the flag the test binary receives when run with -coverprofile.
+	old := os.Args
+	t.Cleanup(func() { os.Args = old })
+	tmpFile := filepath.Join(t.TempDir(), "cov.out")
+	os.Args = []string{"testbinary", "-test.coverprofile=" + tmpFile}
+
+	initCoverage()
+
+	if coverageHits == nil {
+		t.Fatal("expected coverageHits to be initialised")
 	}
-
-	reg.Record("test.templ", 5, 10)
-	reg.Record("test.templ", 7, 3)
-	reg.Record("other.templ", 2, 1)
-
-	tmpFile := filepath.Join(t.TempDir(), "profile.json")
-
-	if err := reg.WriteProfile(tmpFile); err != nil {
-		t.Fatalf("WriteProfile failed: %v", err)
+	if coverageOut != tmpFile {
+		t.Errorf("coverageOut = %q, want %q", coverageOut, tmpFile)
 	}
-
-	// Read and parse JSON
-	data, err := os.ReadFile(tmpFile)
-	if err != nil {
-		t.Fatalf("failed to read profile: %v", err)
-	}
-
-	var profile CoverageProfile
-	if err := json.Unmarshal(data, &profile); err != nil {
-		t.Fatalf("failed to parse JSON: %v", err)
-	}
-
-	// Verify structure
-	if profile.Version != "1" {
-		t.Errorf("expected version 1, got %s", profile.Version)
-	}
-
-	if profile.Mode != "count" {
-		t.Errorf("expected mode count, got %s", profile.Mode)
-	}
-
-	// Verify test.templ has 2 coverage points
-	if len(profile.Files["test.templ"]) != 2 {
-		t.Errorf("expected 2 points for test.templ, got %d", len(profile.Files["test.templ"]))
-	}
-
-	// Verify other.templ has 1 coverage point
-	if len(profile.Files["other.templ"]) != 1 {
-		t.Errorf("expected 1 point for other.templ, got %d", len(profile.Files["other.templ"]))
+	if !coverageAppend {
+		t.Error("expected coverageAppend = true when auto-detected")
 	}
 }
 
-func TestCoverageRegistry_Flush(t *testing.T) {
-	tmpDir := t.TempDir()
+func TestInitCoverage_TEMPLCOVERPROFILEEnvVar(t *testing.T) {
+	resetCoverageState(t)
+	tmpFile := filepath.Join(t.TempDir(), "templ.out")
+	t.Setenv("TEMPLCOVERPROFILE", tmpFile)
 
-	reg := &CoverageRegistry{
-		files:    make(map[string]map[Position]uint32),
-		coverDir: tmpDir,
+	initCoverage()
+
+	if coverageHits == nil {
+		t.Fatal("expected coverageHits to be initialised")
 	}
-	reg.Record("test.templ", 5, 10)
-
-	if err := reg.Flush(); err != nil {
-		t.Fatalf("Flush failed: %v", err)
+	if coverageOut != tmpFile {
+		t.Errorf("coverageOut = %q, want %q", coverageOut, tmpFile)
 	}
-
-	// Verify file was created
-	files, err := filepath.Glob(filepath.Join(tmpDir, "templ-*.json"))
-	if err != nil {
-		t.Fatalf("failed to glob files: %v", err)
-	}
-
-	if len(files) != 1 {
-		t.Errorf("expected 1 profile file, found %d", len(files))
-	}
-
-	// Verify content
-	data, _ := os.ReadFile(files[0])
-	var profile CoverageProfile
-	json.Unmarshal(data, &profile)
-
-	if len(profile.Files["test.templ"]) != 1 {
-		t.Errorf("expected 1 coverage point in profile")
+	if coverageAppend {
+		t.Error("expected coverageAppend = false for TEMPLCOVERPROFILE")
 	}
 }
 
-func TestFlushCoverage_Explicit(t *testing.T) {
-	tmpDir := t.TempDir()
-	t.Setenv("TEMPLCOVERDIR", tmpDir)
+func TestInitCoverage_NoOpWithoutConfig(t *testing.T) {
+	resetCoverageState(t)
+	old := os.Args
+	t.Cleanup(func() { os.Args = old })
+	os.Args = []string{"testbinary"} // no -test.coverprofile
+	t.Setenv("TEMPLCOVERPROFILE", "")
 
-	oldRegistry := coverageRegistry
-	t.Cleanup(func() {
-		coverageRegistry = oldRegistry
-		coverageOnce = sync.Once{}
-	})
+	initCoverage()
 
-	coverageRegistry = nil
-	coverageOnce = sync.Once{}
-	EnableCoverage()
-
-	CoverageTrack("test.templ", 5, 10)
-
-	if err := FlushCoverage(); err != nil {
-		t.Fatalf("FlushCoverage failed: %v", err)
-	}
-
-	files, err := filepath.Glob(filepath.Join(tmpDir, "templ-*.json"))
-	if err != nil {
-		t.Fatalf("failed to glob files: %v", err)
-	}
-
-	if len(files) != 1 {
-		t.Errorf("expected 1 profile file after explicit flush, found %d", len(files))
+	if coverageHits != nil {
+		t.Error("expected coverageHits to remain nil without config")
 	}
 }
 
-type mockRunner struct {
-	code int
+func TestFlushCoverage_WritesStandardFormat(t *testing.T) {
+	resetCoverageState(t)
+	tmpFile := filepath.Join(t.TempDir(), "templ.out")
+	coverageOut = tmpFile
+	coverageAppend = false
+	coverageHits = make(map[string]map[coveragePos]uint32)
+
+	CoverageTrack("a.templ", 2, 3) // 0-indexed; expect 3.4 in profile (1-indexed)
+	CoverageTrack("a.templ", 2, 3) // hit twice
+	CoverageTrack("b.templ", 0, 0) // expect 1.1 in profile
+
+	FlushCoverage()
+
+	lines := readProfileLines(t, tmpFile)
+	if len(lines) == 0 {
+		t.Fatal("profile file is empty")
+	}
+	if lines[0] != "mode: count" {
+		t.Errorf("first line = %q, want %q", lines[0], "mode: count")
+	}
+
+	// Check that our entries use 1-indexed line/col.
+	assertHasEntry(t, lines, "a.templ:3.4,3.4 1 2")
+	assertHasEntry(t, lines, "b.templ:1.1,1.1 1 1")
 }
 
-func (m *mockRunner) Run() int { return m.code }
+func TestFlushCoverage_AppendMode(t *testing.T) {
+	resetCoverageState(t)
+	tmpFile := filepath.Join(t.TempDir(), "cov.out")
 
-func TestRunWithCoverage_NoOpWithoutEnv(t *testing.T) {
-	oldRegistry := coverageRegistry
-	t.Cleanup(func() {
-		coverageRegistry = oldRegistry
-		coverageOnce = sync.Once{}
-	})
-
-	coverageRegistry = nil
-	coverageOnce = sync.Once{}
-	t.Setenv("TEMPLCOVERDIR", "")
-
-	code := RunWithCoverage(&mockRunner{code: 0})
-	if code != 0 {
-		t.Errorf("expected exit code 0, got %d", code)
-	}
-	if coverageRegistry != nil {
-		t.Error("expected registry to remain nil without TEMPLCOVERDIR")
-	}
-}
-
-func TestRunWithCoverage_InitializesAndFlushes(t *testing.T) {
-	tmpDir := t.TempDir()
-	t.Setenv("TEMPLCOVERDIR", tmpDir)
-
-	oldRegistry := coverageRegistry
-	t.Cleanup(func() {
-		coverageRegistry = oldRegistry
-		coverageOnce = sync.Once{}
-	})
-
-	coverageRegistry = nil
-	coverageOnce = sync.Once{}
-
-	code := RunWithCoverage(&mockRunner{code: 0})
-	if code != 0 {
-		t.Errorf("expected exit code 0, got %d", code)
-	}
-	if coverageRegistry == nil {
-		t.Fatal("expected registry to be initialized")
-	}
-
-	files, err := filepath.Glob(filepath.Join(tmpDir, "templ-*.json"))
-	if err != nil {
+	// Pre-write a "mode:" header as Go's coverage tool would.
+	if err := os.WriteFile(tmpFile, []byte("mode: set\n"), 0644); err != nil {
 		t.Fatal(err)
 	}
-	if len(files) != 1 {
-		t.Errorf("expected 1 profile file, found %d", len(files))
+
+	coverageOut = tmpFile
+	coverageAppend = true
+	coverageHits = make(map[string]map[coveragePos]uint32)
+	CoverageTrack("t.templ", 4, 1)
+
+	FlushCoverage()
+
+	lines := readProfileLines(t, tmpFile)
+	if lines[0] != "mode: set" {
+		t.Errorf("first line = %q, want mode: set", lines[0])
 	}
+	// Our entry should appear after the existing header — no second mode line.
+	for _, l := range lines[1:] {
+		if strings.HasPrefix(l, "mode:") {
+			t.Errorf("unexpected extra mode line: %q", l)
+		}
+	}
+	assertHasEntry(t, lines, "t.templ:5.2,5.2 1 1")
+}
+
+func TestRunWithCoverage_NoOpWithoutConfig(t *testing.T) {
+	resetCoverageState(t)
+	// No coverageHits, no coverageOut — should just pass through.
+	code := RunWithCoverage(&mockRunner{code: 7})
+	if code != 7 {
+		t.Errorf("expected 7, got %d", code)
+	}
+}
+
+func TestRunWithCoverage_FlushesOnReturn(t *testing.T) {
+	resetCoverageState(t)
+	tmpFile := filepath.Join(t.TempDir(), "templ.out")
+	coverageOut = tmpFile
+	coverageAppend = false
+	coverageHits = make(map[string]map[coveragePos]uint32)
+
+	CoverageTrack("x.templ", 1, 0)
+
+	code := RunWithCoverage(&mockRunner{code: 0})
+	if code != 0 {
+		t.Errorf("expected 0, got %d", code)
+	}
+
+	lines := readProfileLines(t, tmpFile)
+	assertHasEntry(t, lines, "x.templ:2.1,2.1 1 1")
 }
 
 func TestRunWithCoverage_PropagatesExitCode(t *testing.T) {
-	tmpDir := t.TempDir()
-	t.Setenv("TEMPLCOVERDIR", tmpDir)
-
-	oldRegistry := coverageRegistry
-	t.Cleanup(func() {
-		coverageRegistry = oldRegistry
-		coverageOnce = sync.Once{}
-	})
-
-	coverageRegistry = nil
-	coverageOnce = sync.Once{}
-
+	resetCoverageState(t)
 	code := RunWithCoverage(&mockRunner{code: 42})
 	if code != 42 {
-		t.Errorf("expected exit code 42, got %d", code)
+		t.Errorf("expected 42, got %d", code)
 	}
 }
 
-func TestCoverageSnapshot_ReturnsNilWhenDisabled(t *testing.T) {
-	oldRegistry := coverageRegistry
-	t.Cleanup(func() { coverageRegistry = oldRegistry })
+// helpers
 
-	coverageRegistry = nil
+type mockRunner struct{ code int }
 
-	snap := CoverageSnapshot()
-	if snap != nil {
-		t.Error("expected nil snapshot when coverage disabled")
+func (m *mockRunner) Run() int { return m.code }
+
+func readProfileLines(t *testing.T, path string) []string {
+	t.Helper()
+	f, err := os.Open(path)
+	if err != nil {
+		t.Fatalf("open profile: %v", err)
 	}
+	defer f.Close()
+	var lines []string
+	sc := bufio.NewScanner(f)
+	for sc.Scan() {
+		if l := sc.Text(); l != "" {
+			lines = append(lines, l)
+		}
+	}
+	return lines
 }
 
-func TestCoverageSnapshot_ReturnsDeepCopy(t *testing.T) {
-	oldRegistry := coverageRegistry
-	t.Cleanup(func() { coverageRegistry = oldRegistry })
-
-	coverageRegistry = &CoverageRegistry{
-		files: make(map[string]map[Position]uint32),
+func assertHasEntry(t *testing.T, lines []string, want string) {
+	t.Helper()
+	for _, l := range lines {
+		if l == want {
+			return
+		}
 	}
-	CoverageTrack("test.templ", 5, 10)
-	CoverageTrack("test.templ", 5, 10)
-	CoverageTrack("test.templ", 7, 3)
-
-	snap := CoverageSnapshot()
-	if snap == nil {
-		t.Fatal("expected non-nil snapshot")
-	}
-
-	points := snap["test.templ"]
-	if len(points) != 2 {
-		t.Fatalf("expected 2 points, got %d", len(points))
-	}
-
-	// Verify it's a deep copy: mutating snap shouldn't affect registry
-	snap["test.templ"] = nil
-	snap2 := CoverageSnapshot()
-	if len(snap2["test.templ"]) != 2 {
-		t.Error("snapshot was not a deep copy")
-	}
+	t.Errorf("profile missing entry %q\ngot lines: %v", want, lines)
 }

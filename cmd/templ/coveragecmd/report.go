@@ -11,13 +11,15 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"golang.org/x/tools/cover"
 )
 
 func runReport(w io.Writer, args []string) error {
 	fs := flag.NewFlagSet("report", flag.ExitOnError)
-	inputPaths := fs.String("i", "", "Comma-separated input coverage profiles or glob patterns")
-	manifestPath := fs.String("m", "", "Coverage manifest file")
-	sourceDir := fs.String("source-dir", ".", "Root directory for resolving template source paths")
+	inputPaths := fs.String("i", "", "Comma-separated coverage profiles or glob patterns")
+	manifestPath := fs.String("m", "", "Coverage manifest file (for total construct count)")
+	sourceDir := fs.String("source-dir", ".", "Root directory for resolving .templ source files")
 	htmlOutput := fs.Bool("html", false, "Generate HTML report")
 	jsonOutput := fs.Bool("json", false, "Generate JSON report")
 	outputPath := fs.String("o", "", "Output file path")
@@ -25,12 +27,10 @@ func runReport(w io.Writer, args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-
 	if *inputPaths == "" {
 		return fmt.Errorf("-i flag required: specify input coverage profiles")
 	}
 
-	// Load and merge profiles
 	files, err := expandInputPaths(*inputPaths)
 	if err != nil {
 		return err
@@ -39,21 +39,11 @@ func runReport(w io.Writer, args []string) error {
 		return fmt.Errorf("no coverage profiles found matching: %s", *inputPaths)
 	}
 
-	profiles := make([]*Profile, 0, len(files))
-	for _, file := range files {
-		profile, err := LoadProfile(file)
-		if err != nil {
-			fmt.Fprintf(w, "Warning: skipping %s: %v\n", file, err)
-			continue
-		}
-		profiles = append(profiles, profile)
+	merged, err := loadAndMerge(files)
+	if err != nil {
+		return err
 	}
-	if len(profiles) == 0 {
-		return fmt.Errorf("no valid profiles loaded")
-	}
-	merged := MergeProfiles(profiles)
 
-	// Load manifest (optional)
 	var manifest *Manifest
 	if *manifestPath != "" {
 		manifest, err = LoadManifest(*manifestPath)
@@ -64,7 +54,6 @@ func runReport(w io.Writer, args []string) error {
 		fmt.Fprintln(w, "Warning: No manifest provided (-m); coverage percentages unavailable.")
 	}
 
-	// Dispatch to format-specific generator
 	switch {
 	case *htmlOutput:
 		return generateHTMLReport(w, merged, manifest, *outputPath, *sourceDir)
@@ -75,35 +64,72 @@ func runReport(w io.Writer, args []string) error {
 	}
 }
 
-func generateTerminalReport(w io.Writer, profile *Profile, manifest *Manifest) error {
+// profileHits is a flat representation of hit counts keyed by file and position.
+// Line/col are as written in the profile (1-indexed), matching 0-indexed parser
+// positions after subtracting 1.
+type profileHits map[string]map[profilePos]uint32
+
+type profilePos struct{ line, col int }
+
+// loadAndMerge parses all profile files and sums hit counts for matching points.
+func loadAndMerge(files []string) (profileHits, error) {
+	merged := make(profileHits)
+	for _, path := range files {
+		profiles, err := cover.ParseProfiles(path)
+		if err != nil {
+			return nil, fmt.Errorf("parsing %s: %w", path, err)
+		}
+		for _, p := range profiles {
+			if merged[p.FileName] == nil {
+				merged[p.FileName] = make(map[profilePos]uint32)
+			}
+			for _, b := range p.Blocks {
+				pos := profilePos{b.StartLine, b.StartCol}
+				merged[p.FileName][pos] += uint32(b.Count)
+			}
+		}
+	}
+	return merged, nil
+}
+
+// isCovered reports whether a manifest point (0-indexed) was hit.
+// The profile stores 1-indexed positions, so we add 1 when looking up.
+func isCovered(hits profileHits, filename string, line, col uint32) bool {
+	if m, ok := hits[filename]; ok {
+		return m[profilePos{int(line) + 1, int(col) + 1}] > 0
+	}
+	return false
+}
+
+func expandInputPaths(inputPaths string) ([]string, error) {
+	var files []string
+	for _, pattern := range strings.Split(inputPaths, ",") {
+		pattern = strings.TrimSpace(pattern)
+		matches, err := filepath.Glob(pattern)
+		if err != nil {
+			return nil, fmt.Errorf("invalid glob pattern %s: %w", pattern, err)
+		}
+		files = append(files, matches...)
+	}
+	return files, nil
+}
+
+// --- Terminal report ---
+
+func generateTerminalReport(w io.Writer, hits profileHits, manifest *Manifest) error {
 	type fileStat struct {
 		name    string
 		covered int
-		total   int
+		total   int // -1 if no manifest data
 	}
 
 	var stats []fileStat
+	allFiles := collectFiles(hits, manifest)
 
-	if manifest != nil {
-		for filename, mPoints := range manifest.Files {
-			covered := countCoveredAgainstManifest(profile.Files[filename], mPoints)
-			stats = append(stats, fileStat{name: filename, covered: covered, total: len(mPoints)})
-		}
-		// Include profile-only files (stale manifest)
-		for filename, pPoints := range profile.Files {
-			if _, inManifest := manifest.Files[filename]; !inManifest {
-				stats = append(stats, fileStat{name: filename, covered: countCovered(pPoints), total: -1})
-			}
-		}
-	} else {
-		for filename, pPoints := range profile.Files {
-			stats = append(stats, fileStat{name: filename, covered: countCovered(pPoints), total: -1})
-		}
+	for _, filename := range allFiles {
+		covered, total := countForFile(hits, manifest, filename)
+		stats = append(stats, fileStat{filename, covered, total})
 	}
-
-	sort.Slice(stats, func(i, j int) bool {
-		return stats[i].name < stats[j].name
-	})
 
 	maxLen := len("total")
 	for _, s := range stats {
@@ -113,7 +139,6 @@ func generateTerminalReport(w io.Writer, profile *Profile, manifest *Manifest) e
 	}
 
 	totalCovered, totalTotal := 0, 0
-	hasPercentages := manifest != nil
 	for _, s := range stats {
 		totalCovered += s.covered
 		if s.total >= 0 {
@@ -125,51 +150,18 @@ func generateTerminalReport(w io.Writer, profile *Profile, manifest *Manifest) e
 		}
 	}
 
-	if hasPercentages {
+	if manifest != nil {
 		fmt.Fprintf(w, "%-*s  %5.1f%%  (%d/%d)\n", maxLen, "total",
 			percentage(totalCovered, totalTotal), totalCovered, totalTotal)
 	} else {
 		fmt.Fprintf(w, "%-*s  %d points covered\n", maxLen, "total", totalCovered)
 	}
-
 	return nil
 }
 
-func percentage(covered, total int) float64 {
-	if total == 0 {
-		return 0
-	}
-	return float64(covered) / float64(total) * 100
-}
+// --- HTML report ---
 
-func countCovered(points []CoveragePoint) int {
-	covered := 0
-	for _, p := range points {
-		if p.Hits > 0 {
-			covered++
-		}
-	}
-	return covered
-}
-
-// countCoveredAgainstManifest counts manifest points that have a matching profile point with hits > 0.
-func countCoveredAgainstManifest(profilePoints []CoveragePoint, manifestPoints []ManifestPoint) int {
-	coveredSet := make(map[Position]bool)
-	for _, p := range profilePoints {
-		if p.Hits > 0 {
-			coveredSet[Position{Line: p.Line, Col: p.Col}] = true
-		}
-	}
-	covered := 0
-	for _, mp := range manifestPoints {
-		if coveredSet[Position{Line: mp.Line, Col: mp.Col}] {
-			covered++
-		}
-	}
-	return covered
-}
-
-func generateHTMLReport(w io.Writer, profile *Profile, manifest *Manifest, outputPath string, sourceDir string) error {
+func generateHTMLReport(w io.Writer, hits profileHits, manifest *Manifest, outputPath, sourceDir string) error {
 	if outputPath == "" {
 		outputPath = "coverage.html"
 	}
@@ -177,7 +169,7 @@ func generateHTMLReport(w io.Writer, profile *Profile, manifest *Manifest, outpu
 	type lineInfo struct {
 		Number int
 		Text   string
-		Class  string // "covered", "uncovered", "partial", ""
+		Class  string
 	}
 	type fileData struct {
 		Name       string
@@ -188,82 +180,51 @@ func generateHTMLReport(w io.Writer, profile *Profile, manifest *Manifest, outpu
 		Available  bool
 	}
 
-	// Collect all files from both manifest and profile
-	allFiles := make(map[string]bool)
-	if manifest != nil {
-		for f := range manifest.Files {
-			allFiles[f] = true
-		}
-	}
-	for f := range profile.Files {
-		allFiles[f] = true
-	}
-
+	allFiles := collectFiles(hits, manifest)
 	var filesData []fileData
 	totalCovered, totalTotal := 0, 0
 
-	var filenames []string
-	for f := range allFiles {
-		filenames = append(filenames, f)
-	}
-	sort.Strings(filenames)
-
-	for _, filename := range filenames {
-		fd := fileData{Name: filename}
-
-		var covered int
-		if manifest != nil {
-			if mp, ok := manifest.Files[filename]; ok {
-				covered = countCoveredAgainstManifest(profile.Files[filename], mp)
-				fd.Total = len(mp)
-				fd.Percentage = percentage(covered, len(mp))
-				totalTotal += len(mp)
-			} else {
-				covered = countCovered(profile.Files[filename])
-			}
-		} else {
-			covered = countCovered(profile.Files[filename])
-		}
-		fd.Covered = covered
+	for _, filename := range allFiles {
+		covered, total := countForFile(hits, manifest, filename)
 		totalCovered += covered
+		if total >= 0 {
+			totalTotal += total
+		}
 
-		// Read source file
+		fd := fileData{
+			Name:       filename,
+			Covered:    covered,
+			Total:      total,
+			Percentage: percentage(covered, total),
+		}
+
 		sourcePath := filepath.Join(sourceDir, filename)
 		source, err := os.ReadFile(sourcePath)
 		if err != nil {
-			fd.Available = false
 			fd.Lines = []lineInfo{{Number: 1, Text: "Source not available"}}
 			filesData = append(filesData, fd)
 			continue
 		}
-
 		fd.Available = true
 
-		// Build line-level coverage status
+		// Build per-display-line coverage class.
+		// Manifest points are 0-indexed; display lines are 1-indexed.
 		lineCovered := make(map[uint32]bool)
 		lineUncovered := make(map[uint32]bool)
 
 		if manifest != nil {
-			coveredSet := make(map[Position]bool)
-			for _, p := range profile.Files[filename] {
-				if p.Hits > 0 {
-					coveredSet[Position{Line: p.Line, Col: p.Col}] = true
-				}
-			}
 			for _, mp := range manifest.Files[filename] {
-				// Convert 0-based parser line numbers to 1-based for display lookup
 				displayLine := mp.Line + 1
-				if coveredSet[Position{Line: mp.Line, Col: mp.Col}] {
+				if isCovered(hits, filename, mp.Line, mp.Col) {
 					lineCovered[displayLine] = true
 				} else {
 					lineUncovered[displayLine] = true
 				}
 			}
 		} else {
-			for _, p := range profile.Files[filename] {
-				// Convert 0-based parser line numbers to 1-based for display lookup
-				displayLine := p.Line + 1
-				if p.Hits > 0 {
+			for pos, count := range hits[filename] {
+				displayLine := uint32(pos.line) // profile is 1-indexed, already display line
+				if count > 0 {
 					lineCovered[displayLine] = true
 				} else {
 					lineUncovered[displayLine] = true
@@ -271,22 +232,19 @@ func generateHTMLReport(w io.Writer, profile *Profile, manifest *Manifest, outpu
 			}
 		}
 
-		lines := strings.Split(strings.TrimRight(string(source), "\n"), "\n")
-		for i, line := range lines {
+		for i, line := range strings.Split(strings.TrimRight(string(source), "\n"), "\n") {
 			lineNum := uint32(i + 1)
 			li := lineInfo{Number: i + 1, Text: line}
-			hasCov := lineCovered[lineNum]
-			hasUncov := lineUncovered[lineNum]
-			if hasCov && hasUncov {
+			switch {
+			case lineCovered[lineNum] && lineUncovered[lineNum]:
 				li.Class = "partial"
-			} else if hasCov {
+			case lineCovered[lineNum]:
 				li.Class = "covered"
-			} else if hasUncov {
+			case lineUncovered[lineNum]:
 				li.Class = "uncovered"
 			}
 			fd.Lines = append(fd.Lines, li)
 		}
-
 		filesData = append(filesData, fd)
 	}
 
@@ -295,24 +253,117 @@ func generateHTMLReport(w io.Writer, profile *Profile, manifest *Manifest, outpu
 		TotalCovered    int
 		TotalTotal      int
 		TotalPercentage float64
-	}{
-		Files:           filesData,
-		TotalCovered:    totalCovered,
-		TotalTotal:      totalTotal,
-		TotalPercentage: percentage(totalCovered, totalTotal),
-	}
+	}{filesData, totalCovered, totalTotal, percentage(totalCovered, totalTotal)}
 
 	tmpl, err := htmltemplate.New("coverage").Parse(htmlReportTemplate)
 	if err != nil {
-		return fmt.Errorf("failed to parse HTML template: %w", err)
+		return fmt.Errorf("parse HTML template: %w", err)
 	}
-
 	var buf bytes.Buffer
 	if err := tmpl.Execute(&buf, tmplData); err != nil {
-		return fmt.Errorf("failed to render HTML report: %w", err)
+		return fmt.Errorf("render HTML: %w", err)
+	}
+	return os.WriteFile(outputPath, buf.Bytes(), 0644)
+}
+
+// --- JSON report ---
+
+type JSONReport struct {
+	Version string                       `json:"version"`
+	Total   JSONReportSummary            `json:"total"`
+	Files   map[string]JSONReportSummary `json:"files"`
+}
+
+type JSONReportSummary struct {
+	Covered    int     `json:"covered"`
+	Total      int     `json:"total,omitempty"`
+	Percentage float64 `json:"percentage,omitempty"`
+}
+
+func generateJSONReport(w io.Writer, hits profileHits, manifest *Manifest, outputPath string) error {
+	report := JSONReport{Version: "1", Files: make(map[string]JSONReportSummary)}
+	totalCovered, totalTotal := 0, 0
+
+	for _, filename := range collectFiles(hits, manifest) {
+		covered, total := countForFile(hits, manifest, filename)
+		totalCovered += covered
+		s := JSONReportSummary{Covered: covered}
+		if total >= 0 {
+			totalTotal += total
+			s.Total = total
+			s.Percentage = percentage(covered, total)
+		}
+		report.Files[filename] = s
 	}
 
-	return os.WriteFile(outputPath, buf.Bytes(), 0644)
+	if manifest != nil {
+		report.Total = JSONReportSummary{
+			Covered:    totalCovered,
+			Total:      totalTotal,
+			Percentage: percentage(totalCovered, totalTotal),
+		}
+	} else {
+		report.Total = JSONReportSummary{Covered: totalCovered}
+	}
+
+	data, err := json.MarshalIndent(report, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal JSON: %w", err)
+	}
+	if outputPath != "" {
+		return os.WriteFile(outputPath, data, 0644)
+	}
+	_, err = w.Write(data)
+	return err
+}
+
+// --- helpers ---
+
+// collectFiles returns a sorted list of all files present in hits or manifest.
+func collectFiles(hits profileHits, manifest *Manifest) []string {
+	seen := make(map[string]bool)
+	for f := range hits {
+		seen[f] = true
+	}
+	if manifest != nil {
+		for f := range manifest.Files {
+			seen[f] = true
+		}
+	}
+	files := make([]string, 0, len(seen))
+	for f := range seen {
+		files = append(files, f)
+	}
+	sort.Strings(files)
+	return files
+}
+
+// countForFile returns (covered, total) for a file.
+// total is -1 when no manifest is available.
+func countForFile(hits profileHits, manifest *Manifest, filename string) (covered, total int) {
+	if manifest != nil {
+		mPoints := manifest.Files[filename]
+		total = len(mPoints)
+		for _, mp := range mPoints {
+			if isCovered(hits, filename, mp.Line, mp.Col) {
+				covered++
+			}
+		}
+		return covered, total
+	}
+	for _, count := range hits[filename] {
+		if count > 0 {
+			covered++
+		}
+	}
+	return covered, -1
+}
+
+func percentage(covered, total int) float64 {
+	if total <= 0 {
+		return 0
+	}
+	return float64(covered) / float64(total) * 100
 }
 
 const htmlReportTemplate = `<!DOCTYPE html>
@@ -356,77 +407,3 @@ function showFile(id) {
 </script>
 </body>
 </html>`
-
-// JSONReport is the output structure for JSON coverage reports.
-type JSONReport struct {
-	Version string                       `json:"version"`
-	Total   JSONReportSummary            `json:"total"`
-	Files   map[string]JSONReportSummary `json:"files"`
-}
-
-// JSONReportSummary contains coverage statistics for a file or total.
-type JSONReportSummary struct {
-	Covered    int     `json:"covered"`
-	Total      int     `json:"total,omitempty"`
-	Percentage float64 `json:"percentage,omitempty"`
-}
-
-func generateJSONReport(w io.Writer, profile *Profile, manifest *Manifest, outputPath string) error {
-	report := JSONReport{
-		Version: "1",
-		Files:   make(map[string]JSONReportSummary),
-	}
-
-	allFiles := make(map[string]bool)
-	if manifest != nil {
-		for f := range manifest.Files {
-			allFiles[f] = true
-		}
-	}
-	for f := range profile.Files {
-		allFiles[f] = true
-	}
-
-	totalCovered, totalTotal := 0, 0
-	for filename := range allFiles {
-		summary := JSONReportSummary{}
-		var covered int
-
-		if manifest != nil {
-			if mPoints, ok := manifest.Files[filename]; ok {
-				covered = countCoveredAgainstManifest(profile.Files[filename], mPoints)
-				summary.Total = len(mPoints)
-				summary.Percentage = percentage(covered, len(mPoints))
-				totalTotal += len(mPoints)
-			} else {
-				covered = countCovered(profile.Files[filename])
-			}
-		} else {
-			covered = countCovered(profile.Files[filename])
-		}
-		summary.Covered = covered
-		totalCovered += covered
-		report.Files[filename] = summary
-	}
-
-	if manifest != nil {
-		report.Total = JSONReportSummary{
-			Covered:    totalCovered,
-			Total:      totalTotal,
-			Percentage: percentage(totalCovered, totalTotal),
-		}
-	} else {
-		report.Total = JSONReportSummary{Covered: totalCovered}
-	}
-
-	data, err := json.MarshalIndent(report, "", "  ")
-	if err != nil {
-		return fmt.Errorf("failed to marshal JSON report: %w", err)
-	}
-
-	if outputPath != "" {
-		return os.WriteFile(outputPath, data, 0644)
-	}
-	_, err = w.Write(data)
-	return err
-}

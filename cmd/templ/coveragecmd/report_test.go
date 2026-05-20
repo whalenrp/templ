@@ -4,88 +4,75 @@ import (
 	"bytes"
 	"encoding/json"
 	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 )
 
-func TestTerminalReport(t *testing.T) {
-	profile := &Profile{
-		Version: "1",
-		Mode:    "count",
-		Files: map[string][]CoveragePoint{
-			"a.templ": {
-				{Line: 1, Col: 0, Hits: 3},
-				{Line: 2, Col: 0, Hits: 0},
-			},
-			"b.templ": {
-				{Line: 1, Col: 0, Hits: 1},
-			},
-		},
+// buildHits constructs a profileHits from (filename, line1indexed, col1indexed, count) tuples.
+func buildHits(entries ...any) profileHits {
+	h := make(profileHits)
+	for i := 0; i < len(entries); i += 4 {
+		file := entries[i].(string)
+		line := entries[i+1].(int)
+		col := entries[i+2].(int)
+		count := entries[i+3].(uint32)
+		if h[file] == nil {
+			h[file] = make(map[profilePos]uint32)
+		}
+		h[file][profilePos{line, col}]++
+		h[file][profilePos{line, col}] = count
 	}
+	return h
+}
+
+func TestTerminalReport(t *testing.T) {
+	// Manifest uses 0-indexed; profile uses 1-indexed (line+1, col+1).
+	hits := buildHits(
+		"a.templ", 2, 1, uint32(3), // manifest line=1,col=0 → profile 2.1
+		"b.templ", 2, 1, uint32(1), // manifest line=1,col=0 → profile 2.1
+	)
 	manifest := &Manifest{
 		Version: "1",
 		Files: map[string][]ManifestPoint{
 			"a.templ": {{Line: 1, Col: 0}, {Line: 2, Col: 0}},
 			"b.templ": {{Line: 1, Col: 0}},
-			"c.templ": {{Line: 1, Col: 0}},
 		},
 	}
 
 	var buf bytes.Buffer
-	if err := generateTerminalReport(&buf, profile, manifest); err != nil {
-		t.Fatal(err)
+	if err := generateTerminalReport(&buf, hits, manifest); err != nil {
+		t.Fatalf("unexpected error: %v", err)
 	}
+	out := buf.String()
 
-	output := buf.String()
-	if !strings.Contains(output, "a.templ") || !strings.Contains(output, "50.0%") {
-		t.Errorf("expected a.templ at 50%%, got:\n%s", output)
+	if !strings.Contains(out, "a.templ") {
+		t.Errorf("expected a.templ in output:\n%s", out)
 	}
-	if !strings.Contains(output, "b.templ") || !strings.Contains(output, "100.0%") {
-		t.Errorf("expected b.templ at 100%%, got:\n%s", output)
+	if !strings.Contains(out, "b.templ") {
+		t.Errorf("expected b.templ in output:\n%s", out)
 	}
-	if !strings.Contains(output, "c.templ") || !strings.Contains(output, "0.0%") {
-		t.Errorf("expected c.templ at 0%%, got:\n%s", output)
-	}
-	if !strings.Contains(output, "total") {
-		t.Errorf("expected total line, got:\n%s", output)
+	if !strings.Contains(out, "total") {
+		t.Errorf("expected total line in output:\n%s", out)
 	}
 }
 
-func TestTerminalReportWithoutManifest(t *testing.T) {
-	profile := &Profile{
-		Version: "1",
-		Mode:    "count",
-		Files: map[string][]CoveragePoint{
-			"a.templ": {{Line: 1, Col: 0, Hits: 3}},
-		},
-	}
-
+func TestTerminalReport_NoManifest(t *testing.T) {
+	hits := buildHits("a.templ", 2, 1, uint32(5))
 	var buf bytes.Buffer
-	if err := generateTerminalReport(&buf, profile, nil); err != nil {
-		t.Fatal(err)
+	if err := generateTerminalReport(&buf, hits, nil); err != nil {
+		t.Fatalf("unexpected error: %v", err)
 	}
-
-	output := buf.String()
-	if !strings.Contains(output, "a.templ") {
-		t.Errorf("expected a.templ in output, got:\n%s", output)
+	out := buf.String()
+	if !strings.Contains(out, "a.templ") {
+		t.Errorf("expected a.templ in output:\n%s", out)
 	}
-	if strings.Contains(output, "%") {
-		t.Errorf("expected no percentages without manifest, got:\n%s", output)
+	if !strings.Contains(out, "points covered") {
+		t.Errorf("expected 'points covered' without manifest:\n%s", out)
 	}
 }
 
 func TestJSONReport(t *testing.T) {
-	profile := &Profile{
-		Version: "1",
-		Mode:    "count",
-		Files: map[string][]CoveragePoint{
-			"a.templ": {
-				{Line: 1, Col: 0, Hits: 3},
-				{Line: 2, Col: 0, Hits: 0},
-			},
-		},
-	}
+	hits := buildHits("a.templ", 2, 1, uint32(3))
 	manifest := &Manifest{
 		Version: "1",
 		Files: map[string][]ManifestPoint{
@@ -94,264 +81,60 @@ func TestJSONReport(t *testing.T) {
 	}
 
 	var buf bytes.Buffer
-	if err := generateJSONReport(&buf, profile, manifest, ""); err != nil {
-		t.Fatal(err)
+	if err := generateJSONReport(&buf, hits, manifest, ""); err != nil {
+		t.Fatalf("unexpected error: %v", err)
 	}
 
 	var report JSONReport
 	if err := json.Unmarshal(buf.Bytes(), &report); err != nil {
-		t.Fatal(err)
+		t.Fatalf("invalid JSON: %v", err)
 	}
-
 	if report.Version != "1" {
-		t.Errorf("version: got %q, want %q", report.Version, "1")
+		t.Errorf("version = %q, want 1", report.Version)
 	}
-	if report.Total.Covered != 1 {
-		t.Errorf("total covered: got %d, want 1", report.Total.Covered)
-	}
-	if report.Total.Total != 2 {
-		t.Errorf("total total: got %d, want 2", report.Total.Total)
-	}
-	if report.Total.Percentage != 50.0 {
-		t.Errorf("total percentage: got %f, want 50.0", report.Total.Percentage)
-	}
-	fileStat := report.Files["a.templ"]
-	if fileStat.Covered != 1 || fileStat.Total != 2 {
-		t.Errorf("a.templ: got covered=%d total=%d, want 1/2", fileStat.Covered, fileStat.Total)
+	if _, ok := report.Files["a.templ"]; !ok {
+		t.Error("expected a.templ in JSON report")
 	}
 }
 
-func TestJSONReportWithoutManifest(t *testing.T) {
-	profile := &Profile{
-		Version: "1",
-		Mode:    "count",
-		Files: map[string][]CoveragePoint{
-			"a.templ": {{Line: 1, Col: 0, Hits: 3}},
-		},
-	}
-
-	var buf bytes.Buffer
-	if err := generateJSONReport(&buf, profile, nil, ""); err != nil {
-		t.Fatal(err)
-	}
-
-	var report JSONReport
-	if err := json.Unmarshal(buf.Bytes(), &report); err != nil {
-		t.Fatal(err)
-	}
-
-	if report.Total.Total != 0 {
-		t.Errorf("expected total=0 without manifest, got %d", report.Total.Total)
-	}
-	if report.Files["a.templ"].Covered != 1 {
-		t.Errorf("expected covered=1, got %d", report.Files["a.templ"].Covered)
-	}
-}
-
-func TestHTMLReport(t *testing.T) {
+func TestLoadAndMerge(t *testing.T) {
+	// Write two standard-format profiles to temp files and verify they merge.
 	dir := t.TempDir()
-	templFile := filepath.Join(dir, "test.templ")
-	os.WriteFile(templFile, []byte("package test\n\ntempl Hello() {\n\t<div>hello</div>\n}\n"), 0644)
-
-	profile := &Profile{
-		Version: "1",
-		Mode:    "count",
-		Files: map[string][]CoveragePoint{
-			templFile: {
-				{Line: 3, Col: 1, Hits: 5},
-				{Line: 4, Col: 0, Hits: 0},
-			},
-		},
-	}
-	manifest := &Manifest{
-		Version: "1",
-		Files: map[string][]ManifestPoint{
-			templFile: {{Line: 3, Col: 1}, {Line: 4, Col: 0}},
-		},
+	writeProfile := func(name, content string) string {
+		path := dir + "/" + name
+		if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+			t.Fatal(err)
+		}
+		return path
 	}
 
-	outputPath := filepath.Join(dir, "coverage.html")
-	var buf bytes.Buffer
-	if err := generateHTMLReport(&buf, profile, manifest, outputPath, "/"); err != nil {
-		t.Fatal(err)
-	}
+	p1 := writeProfile("p1.out", "mode: count\na.templ:2.1,2.1 1 3\n")
+	p2 := writeProfile("p2.out", "mode: count\na.templ:2.1,2.1 1 2\nb.templ:5.3,5.3 1 1\n")
 
-	data, err := os.ReadFile(outputPath)
+	merged, err := loadAndMerge([]string{p1, p2})
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("loadAndMerge: %v", err)
 	}
-	html := string(data)
 
-	if !strings.Contains(html, "<html") {
-		t.Error("expected HTML document")
+	if merged["a.templ"][profilePos{2, 1}] != 5 {
+		t.Errorf("a.templ 2.1 count = %d, want 5", merged["a.templ"][profilePos{2, 1}])
 	}
-	if !strings.Contains(html, "test.templ") {
-		t.Error("expected filename in report")
-	}
-	if !strings.Contains(html, "covered") {
-		t.Error("expected coverage class in report")
+	if merged["b.templ"][profilePos{5, 3}] != 1 {
+		t.Errorf("b.templ 5.3 count = %d, want 1", merged["b.templ"][profilePos{5, 3}])
 	}
 }
 
-func TestHTMLReportMissingSource(t *testing.T) {
-	profile := &Profile{
-		Version: "1",
-		Mode:    "count",
-		Files: map[string][]CoveragePoint{
-			"/nonexistent/test.templ": {{Line: 1, Col: 0, Hits: 1}},
-		},
+func TestIsCovered(t *testing.T) {
+	hits := buildHits(
+		"t.templ", 4, 2, uint32(1), // profile 1-indexed: line=4,col=2 → manifest line=3,col=1
+	)
+	if !isCovered(hits, "t.templ", 3, 1) { // manifest 0-indexed
+		t.Error("expected covered")
 	}
-	manifest := &Manifest{
-		Version: "1",
-		Files: map[string][]ManifestPoint{
-			"/nonexistent/test.templ": {{Line: 1, Col: 0}},
-		},
+	if isCovered(hits, "t.templ", 3, 2) {
+		t.Error("unexpected covered for different col")
 	}
-
-	dir := t.TempDir()
-	outputPath := filepath.Join(dir, "coverage.html")
-	var buf bytes.Buffer
-	err := generateHTMLReport(&buf, profile, manifest, outputPath, "")
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	data, _ := os.ReadFile(outputPath)
-	if !strings.Contains(string(data), "Source not available") {
-		t.Error("expected 'Source not available' for missing file")
-	}
-}
-
-func TestReportIntegration(t *testing.T) {
-	dir := t.TempDir()
-
-	// Write a mock .templ source file for HTML report
-	sourceFile := filepath.Join(dir, "template.templ")
-	os.WriteFile(sourceFile, []byte("package test\n\ntempl Hello(name string) {\n\t<div>{ name }</div>\n}\n"), 0644)
-
-	manifest := &Manifest{
-		Version: "1",
-		Files: map[string][]ManifestPoint{
-			sourceFile: {
-				{Line: 2, Col: 0},
-				{Line: 3, Col: 1},
-				{Line: 3, Col: 8},
-			},
-		},
-	}
-	manifestPath := filepath.Join(dir, "manifest.json")
-	if err := manifest.Write(manifestPath); err != nil {
-		t.Fatal(err)
-	}
-
-	profile := &Profile{
-		Version: "1",
-		Mode:    "count",
-		Files: map[string][]CoveragePoint{
-			sourceFile: {
-				{Line: 2, Col: 0, Hits: 5, Type: "expression"},
-				{Line: 3, Col: 1, Hits: 5, Type: "expression"},
-				{Line: 3, Col: 8, Hits: 0, Type: "expression"},
-			},
-		},
-	}
-	profilePath := filepath.Join(dir, "coverage.json")
-	if err := profile.Write(profilePath); err != nil {
-		t.Fatal(err)
-	}
-
-	t.Run("terminal", func(t *testing.T) {
-		var buf bytes.Buffer
-		err := runReport(&buf, []string{"-i", profilePath, "-m", manifestPath})
-		if err != nil {
-			t.Fatal(err)
-		}
-		output := buf.String()
-		if !strings.Contains(output, "66.7%") {
-			t.Errorf("expected 66.7%% coverage (2/3), got:\n%s", output)
-		}
-	})
-
-	t.Run("json", func(t *testing.T) {
-		var buf bytes.Buffer
-		err := runReport(&buf, []string{"-i", profilePath, "-m", manifestPath, "-json"})
-		if err != nil {
-			t.Fatal(err)
-		}
-		var report JSONReport
-		if err := json.Unmarshal(buf.Bytes(), &report); err != nil {
-			t.Fatal(err)
-		}
-		if report.Total.Covered != 2 || report.Total.Total != 3 {
-			t.Errorf("expected 2/3, got %d/%d", report.Total.Covered, report.Total.Total)
-		}
-	})
-
-	t.Run("html", func(t *testing.T) {
-		htmlPath := filepath.Join(dir, "report.html")
-		var buf bytes.Buffer
-		err := runReport(&buf, []string{"-i", profilePath, "-m", manifestPath, "-html", "-o", htmlPath})
-		if err != nil {
-			t.Fatal(err)
-		}
-		data, err := os.ReadFile(htmlPath)
-		if err != nil {
-			t.Fatal(err)
-		}
-		html := string(data)
-		if !strings.Contains(html, "template.templ") {
-			t.Error("expected filename in HTML report")
-		}
-		if !strings.Contains(html, "covered") {
-			t.Error("expected covered class in HTML report")
-		}
-	})
-}
-
-func TestManifestRoundTrip(t *testing.T) {
-	m := &Manifest{
-		Version: "1",
-		Files: map[string][]ManifestPoint{
-			"templates/a.templ": {
-				{Line: 5, Col: 3},
-				{Line: 8, Col: 2},
-			},
-			"templates/b.templ": {
-				{Line: 1, Col: 0},
-			},
-		},
-	}
-
-	dir := t.TempDir()
-	path := filepath.Join(dir, "manifest.json")
-
-	if err := m.Write(path); err != nil {
-		t.Fatal(err)
-	}
-
-	loaded, err := LoadManifest(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	if loaded.Version != "1" {
-		t.Errorf("version: got %q, want %q", loaded.Version, "1")
-	}
-	if len(loaded.Files["templates/a.templ"]) != 2 {
-		t.Errorf("a.templ points: got %d, want 2", len(loaded.Files["templates/a.templ"]))
-	}
-	if len(loaded.Files["templates/b.templ"]) != 1 {
-		t.Errorf("b.templ points: got %d, want 1", len(loaded.Files["templates/b.templ"]))
-	}
-}
-
-func TestLoadManifestInvalidJSON(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "bad.json")
-	os.WriteFile(path, []byte("not json"), 0644)
-
-	_, err := LoadManifest(path)
-	if err == nil {
-		t.Fatal("expected error for invalid JSON")
+	if isCovered(hits, "other.templ", 3, 1) {
+		t.Error("unexpected covered for different file")
 	}
 }

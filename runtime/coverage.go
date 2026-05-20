@@ -1,213 +1,140 @@
 package runtime
 
 import (
-	"encoding/json"
 	"fmt"
 	"os"
-	"os/signal"
-	"path/filepath"
+	"strings"
 	"sync"
-	"syscall"
-	"time"
 )
 
-// Position represents a source location in a template file
-type Position struct {
-	Line uint32 `json:"line"`
-	Col  uint32 `json:"col"`
-}
-
-// CoveragePoint represents a single coverage measurement
-type CoveragePoint struct {
-	Line uint32 `json:"line"`
-	Col  uint32 `json:"col"`
-	Hits uint32 `json:"hits"`
-	Type string `json:"type"`
-}
-
-// CoverageProfile represents the JSON coverage output format
-type CoverageProfile struct {
-	Version string                       `json:"version"`
-	Mode    string                       `json:"mode"`
-	Files   map[string][]CoveragePoint   `json:"files"`
-}
-
-// CoverageRegistry tracks coverage data during test execution
-type CoverageRegistry struct {
-	mu       sync.Mutex
-	files    map[string]map[Position]uint32 // filename → position → hit count
-	coverDir string                         // captured at init time, used at flush time
-}
-
+// coverageState holds all runtime coverage state.
+// Initialised once by init() or by tests via resetCoverageState.
 var (
-	coverageRegistry *CoverageRegistry
-	coverageOnce     sync.Once
+	coverageMu     sync.Mutex
+	coverageHits   map[string]map[coveragePos]uint32
+	coverageOut    string // file to write profile to
+	coverageAppend bool   // true: Go already wrote the "mode:" header, just append
 )
 
-// EnableCoverage initializes the coverage registry for non-test use cases (e.g. servers).
-// For test binaries, use RunWithCoverage instead.
-// Unlike the old EnableCoverageForTesting(), this requires TEMPLCOVERDIR to be set —
-// it won't initialize the registry without a target directory.
-func EnableCoverage() {
-	dir := os.Getenv("TEMPLCOVERDIR")
-	if dir == "" {
+type coveragePos struct{ line, col uint32 }
+
+func init() {
+	initCoverage()
+}
+
+// initCoverage wires up coverage output. Separated from init so tests can reset state.
+func initCoverage() {
+	// Auto-detect: if the test binary was given -test.coverprofile, append our
+	// blocks to that same file so users need no extra env vars.
+	for _, arg := range os.Args {
+		if v, ok := strings.CutPrefix(arg, "-test.coverprofile="); ok {
+			coverageOut = v
+			coverageAppend = true
+			coverageHits = make(map[string]map[coveragePos]uint32)
+			return
+		}
+	}
+	// Explicit override: write a standalone profile (includes "mode:" header).
+	if p := os.Getenv("TEMPLCOVERPROFILE"); p != "" {
+		coverageOut = p
+		coverageAppend = false
+		coverageHits = make(map[string]map[coveragePos]uint32)
+	}
+}
+
+// CoverageTrack records that a coverage point was executed.
+// Called by generated template code; no-op when coverage is not configured.
+func CoverageTrack(filename string, line, col uint32) {
+	if coverageHits == nil {
 		return
 	}
-	coverageOnce.Do(func() {
-		coverageRegistry = &CoverageRegistry{
-			files:    make(map[string]map[Position]uint32),
-			coverDir: dir,
-		}
-	})
+	coverageMu.Lock()
+	defer coverageMu.Unlock()
+	if coverageHits[filename] == nil {
+		coverageHits[filename] = make(map[coveragePos]uint32)
+	}
+	coverageHits[filename][coveragePos{line, col}]++
 }
 
-// TestRunner is implemented by *testing.M (which has a Run() method).
+// CoverageHitAt returns the hit count for a specific coverage point.
+// Returns 0 if coverage is disabled or the point was never hit.
+// Intended for use in tests that verify coverage behaviour in-process.
+func CoverageHitAt(filename string, line, col uint32) uint32 {
+	if coverageHits == nil {
+		return 0
+	}
+	coverageMu.Lock()
+	defer coverageMu.Unlock()
+	if m, ok := coverageHits[filename]; ok {
+		return m[coveragePos{line, col}]
+	}
+	return 0
+}
+
+// TestRunner is implemented by *testing.M.
 type TestRunner interface {
 	Run() int
 }
 
-// RunWithCoverage wraps m.Run() with coverage lifecycle management.
-// If TEMPLCOVERDIR is not set, it calls m.Run() directly with zero overhead.
-// Safe to leave in permanently — it's a no-op without TEMPLCOVERDIR.
+// RunWithCoverage wraps m.Run() to ensure coverage is written before the
+// process exits. Safe to leave permanently — it is a no-op when coverage is
+// not configured.
 func RunWithCoverage(m TestRunner) int {
-	dir := os.Getenv("TEMPLCOVERDIR")
-	if dir == "" {
-		return m.Run()
-	}
-
-	coverageOnce.Do(func() {
-		coverageRegistry = &CoverageRegistry{
-			files:    make(map[string]map[Position]uint32),
-			coverDir: dir,
-		}
-	})
-
-	done := make(chan struct{})
-	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
-	go func() {
-		select {
-		case <-sigChan:
-			coverageRegistry.Flush()
-			os.Exit(1)
-		case <-done:
-			return
-		}
-	}()
-
 	code := m.Run()
-
-	signal.Stop(sigChan)
-	close(done)
-	coverageRegistry.Flush()
+	FlushCoverage()
 	return code
 }
 
-// CoverageSnapshot returns a deep copy of current coverage data.
-// Returns nil if coverage is not enabled. Thread-safe.
-func CoverageSnapshot() map[string][]CoveragePoint {
-	if coverageRegistry == nil {
-		return nil
+// EnableCoverageForTest initialises in-process coverage tracking for tests that
+// want to verify hit counts via CoverageHitAt. Call this in TestMain before
+// RunWithCoverage. If outPath is non-empty it overrides the output file;
+// if empty, any auto-detected path (from -test.coverprofile) is preserved.
+func EnableCoverageForTest(outPath string) {
+	coverageMu.Lock()
+	defer coverageMu.Unlock()
+	coverageHits = make(map[string]map[coveragePos]uint32)
+	if outPath != "" {
+		coverageOut = outPath
+		coverageAppend = false
 	}
-	coverageRegistry.mu.Lock()
-	defer coverageRegistry.mu.Unlock()
+	// If outPath is empty, keep whatever auto-detect set up in init().
+}
 
-	result := make(map[string][]CoveragePoint, len(coverageRegistry.files))
-	for filename, positions := range coverageRegistry.files {
-		points := make([]CoveragePoint, 0, len(positions))
-		for pos, hits := range positions {
-			points = append(points, CoveragePoint{
-				Line: pos.Line,
-				Col:  pos.Col,
-				Hits: hits,
-			})
+// FlushCoverage writes the current coverage state to the configured output
+// file. Calling it multiple times appends additional entries; the merge tools
+// handle deduplication. Exported so tests can flush mid-run if needed.
+func FlushCoverage() {
+	if coverageHits == nil || coverageOut == "" {
+		return
+	}
+	coverageMu.Lock()
+	defer coverageMu.Unlock()
+
+	var f *os.File
+	var err error
+	if coverageAppend {
+		// Go has already written "mode: set" — just append our blocks.
+		f, err = os.OpenFile(coverageOut, os.O_APPEND|os.O_WRONLY, 0644)
+	} else {
+		f, err = os.Create(coverageOut)
+		if err == nil {
+			fmt.Fprintln(f, "mode: count")
 		}
-		result[filename] = points
 	}
-	return result
-}
-
-// Record increments the hit count for a coverage point
-func (r *CoverageRegistry) Record(filename string, line, col uint32) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
-	if r.files[filename] == nil {
-		r.files[filename] = make(map[Position]uint32)
-	}
-
-	pos := Position{Line: line, Col: col}
-	r.files[filename][pos]++
-}
-
-// CoverageTrack records that a coverage point was executed
-// Called by generated template code when coverage is enabled
-func CoverageTrack(filename string, line, col uint32) {
-	if coverageRegistry == nil {
-		return // No-op if coverage disabled
-	}
-	coverageRegistry.Record(filename, line, col)
-}
-
-// WriteProfile writes coverage data to a JSON file
-func (r *CoverageRegistry) WriteProfile(path string) error {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
-	profile := CoverageProfile{
-		Version: "1",
-		Mode:    "count",
-		Files:   make(map[string][]CoveragePoint),
-	}
-
-	// Convert internal map to slice format
-	for filename, positions := range r.files {
-		points := make([]CoveragePoint, 0, len(positions))
-		for pos, hits := range positions {
-			points = append(points, CoveragePoint{
-				Line: pos.Line,
-				Col:  pos.Col,
-				Hits: hits,
-				Type: "expression", // Default type for now
-			})
-		}
-		profile.Files[filename] = points
-	}
-
-	// Write JSON
-	data, err := json.MarshalIndent(profile, "", "  ")
 	if err != nil {
-		return fmt.Errorf("failed to marshal profile: %w", err)
+		return
 	}
+	defer f.Close()
 
-	if err := os.WriteFile(path, data, 0644); err != nil {
-		return fmt.Errorf("failed to write profile: %w", err)
+	for filename, positions := range coverageHits {
+		for pos, count := range positions {
+			// Standard Go coverage format. The parser uses 0-indexed line/col;
+			// the standard format is 1-indexed, so we add 1 to each.
+			fmt.Fprintf(f, "%s:%d.%d,%d.%d 1 %d\n",
+				filename,
+				pos.line+1, pos.col+1,
+				pos.line+1, pos.col+1,
+				count)
+		}
 	}
-
-	return nil
-}
-
-// Flush writes the coverage profile to disk
-func (r *CoverageRegistry) Flush() error {
-	if r.coverDir == "" {
-		return nil
-	}
-
-	if err := os.MkdirAll(r.coverDir, 0755); err != nil {
-		return fmt.Errorf("failed to create output directory: %w", err)
-	}
-
-	filename := fmt.Sprintf("templ-%d-%d.json", os.Getpid(), time.Now().UnixNano())
-	path := filepath.Join(r.coverDir, filename)
-
-	return r.WriteProfile(path)
-}
-
-// FlushCoverage explicitly flushes coverage data to disk
-// Tests should call this in cleanup to ensure profiles are written
-func FlushCoverage() error {
-	if coverageRegistry == nil {
-		return nil
-	}
-	return coverageRegistry.Flush()
 }
