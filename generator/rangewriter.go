@@ -25,6 +25,19 @@ type RangeWriter struct {
 	index    int
 	builder  *strings.Builder
 	Literals []string
+
+	// OnLiteralClose is called for each source position when a literal batch flushes.
+	OnLiteralClose         func(goRange parser.Range, srcPos parser.Position)
+	literalSourcePositions []parser.Position
+}
+
+// SetLiteralSourcePosition records pos as a templ origin for the next literal flush.
+// Zero positions are ignored.
+func (rw *RangeWriter) SetLiteralSourcePosition(pos parser.Position) {
+	if pos.Index == 0 && pos.Line == 0 && pos.Col == 0 {
+		return
+	}
+	rw.literalSourcePositions = append(rw.literalSourcePositions, pos)
 }
 
 func (rw *RangeWriter) closeLiteral(indent int) (r parser.Range, err error) {
@@ -43,14 +56,21 @@ func (rw *RangeWriter) closeLiteral(indent int) (r parser.Range, err error) {
 	sb.WriteString(`")`)
 	sb.WriteString("\n")
 
-	if _, err := rw.write(sb.String()); err != nil {
+	if r, err = rw.write(sb.String()); err != nil {
 		return r, err
+	}
+	if rw.OnLiteralClose != nil {
+		for _, pos := range rw.literalSourcePositions {
+			rw.OnLiteralClose(r, pos)
+		}
+		rw.literalSourcePositions = nil
 	}
 
 	err = rw.writeErrorHandler(indent)
 	return
 }
 
+// WriteIndent flushes any pending literal then writes indentation + s.
 func (rw *RangeWriter) WriteIndent(level int, s string) (r parser.Range, err error) {
 	if rw.inLiteral {
 		if _, err = rw.closeLiteral(level); err != nil {

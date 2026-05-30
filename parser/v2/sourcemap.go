@@ -107,7 +107,23 @@ func (sm *SourceMap) Add(src Expression, tgt Range) (updatedFrom Position) {
 	return src.Range.From
 }
 
-// TargetPositionFromSource looks up the target position using the source position.
+// AddLiteralPosition maps a templ source position to a generated Go WriteString call.
+// The Go→templ direction is only written when no entry exists at that position,
+// preserving more-precise per-character entries from Add.
+func (sm *SourceMap) AddLiteralPosition(src Position, tgt Range) {
+	if sm.SourceLinesToTarget[src.Line] == nil {
+		sm.SourceLinesToTarget[src.Line] = make(map[uint32]Position)
+	}
+	sm.SourceLinesToTarget[src.Line][src.Col] = tgt.From
+
+	if sm.TargetLinesToSource[tgt.From.Line] == nil {
+		sm.TargetLinesToSource[tgt.From.Line] = make(map[uint32]Position)
+	}
+	if _, exists := sm.TargetLinesToSource[tgt.From.Line][tgt.From.Col]; !exists {
+		sm.TargetLinesToSource[tgt.From.Line][tgt.From.Col] = src
+	}
+}
+
 func (sm *SourceMap) TargetPositionFromSource(line, col uint32) (tgt Position, ok bool) {
 	lm, ok := sm.SourceLinesToTarget[line]
 	if !ok {
