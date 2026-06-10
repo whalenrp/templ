@@ -484,6 +484,43 @@ set tier_1 to #tier-1's value
 			},
 		},
 		{
+			// Regression: the regex parser greedily starts at the division /,
+			// scans forward, and terminates at the / inside 'N/A', returning
+			// "/ b + 'N/" as a bogus regex. The remaining A'; corrupts the
+			// string-delimiter state so </script> is never recognised.
+			name: "division operator on a line where a later string contains a slash",
+			input: `<script>
+var x = a / b + 'N/A';
+</script>`,
+			expected: &ScriptElement{
+				Contents: []ScriptContents{
+					NewScriptContentsScriptCode("\nvar x = a / b + 'N/A';\n"),
+				},
+				Range: Range{
+					From: Position{Index: 0, Line: 0, Col: 0},
+					To:   Position{Index: 41, Line: 2, Col: 9},
+				},
+			},
+		},
+		{
+			// A ternary on one line where the division and 'N/A' coexist without
+			// any {{ }} between them to trigger the Go-expression guard in the
+			// regex parser.
+			name: "ternary with division and slash-containing fallback string on one line",
+			input: `<script>
+html += fn(x ? (a / b) + ' items' : 'N/A');
+</script>`,
+			expected: &ScriptElement{
+				Contents: []ScriptContents{
+					NewScriptContentsScriptCode("\nhtml += fn(x ? (a / b) + ' items' : 'N/A');\n"),
+				},
+				Range: Range{
+					From: Position{Index: 0, Line: 0, Col: 0},
+					To:   Position{Index: 62, Line: 2, Col: 9},
+				},
+			},
+		},
+		{
 			name: "regexp expressions",
 			input: `<script>
 const result = call(1000 / 10, {{ data }}, 1000 / 10);
